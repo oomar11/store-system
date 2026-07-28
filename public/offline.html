@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#1473e6" />
+    <title>ويندور — أوفلاين</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: "Segoe UI", Tahoma, sans-serif;
+        background: linear-gradient(160deg, #e8eef6 0%, #d7e4f5 100%);
+        color: #142033;
+        padding: 24px;
+        text-align: center;
+      }
+      .card {
+        max-width: 420px;
+        background: #fff;
+        border-radius: 16px;
+        padding: 28px 24px;
+        box-shadow: 0 12px 40px rgba(20, 32, 51, 0.12);
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 1.35rem;
+      }
+      p {
+        margin: 0 0 18px;
+        color: #5a6a7e;
+        line-height: 1.6;
+      }
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 10px;
+        background: #1473e6;
+        color: #fff;
+        font-weight: 700;
+        padding: 12px 20px;
+        cursor: pointer;
+      }
+    </style>
+    <script>
+      (function () {
+        var paths = ["/", "/m", "/dashboard", "/pos"];
+        if (!("caches" in window)) return;
+        caches.keys().then(function (keys) {
+          return Promise.all(
+            keys.map(function (key) {
+              return caches.open(key).then(function (cache) {
+                return Promise.all(
+                  paths.map(function (path) {
+                    return cache.match(path).then(function (res) {
+                      if (res) {
+                        location.replace(path);
+                        return true;
+                      }
+                      return false;
+                    });
+                  })
+                );
+              });
+            })
+          );
+        });
+      })();
+    </script>
+  </head>
+  <body>
+    <div class="card">
+      <h1>جاري فتح التطبيق…</h1>
+      <p>
+        لو ظهرت الرسالة دي، افتح التطبيق مرة وأثناء وجود نت بعد تسجيل الدخول
+        حتى يُحفظ للعمل بدون إنترنت.
+      </p>
+      <button type="button" onclick="location.href='/'">فتح التطبيق</button>
+    </div>
+  </body>
+</html>

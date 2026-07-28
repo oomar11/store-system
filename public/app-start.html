@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#1473e6" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>ويندور</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        font-family: "Segoe UI", Tahoma, sans-serif;
+        background: #1473e6;
+        color: #fff;
+      }
+      .wrap {
+        min-height: 100%;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        text-align: center;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 1.5rem;
+      }
+      p {
+        margin: 0 0 16px;
+        opacity: 0.9;
+        line-height: 1.5;
+      }
+      .spin {
+        width: 36px;
+        height: 36px;
+        margin: 0 auto 16px;
+        border: 3px solid rgba(255, 255, 255, 0.35);
+        border-top-color: #fff;
+        border-radius: 50%;
+        animation: s 0.8s linear infinite;
+      }
+      @keyframes s {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 10px;
+        background: #fff;
+        color: #1473e6;
+        font-weight: 700;
+        padding: 12px 18px;
+        cursor: pointer;
+      }
+      .err {
+        display: none;
+        max-width: 420px;
+      }
+      .err.show {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div>
+        <div class="spin" id="spin"></div>
+        <h1>ويندور</h1>
+        <p id="msg">جاري فتح التطبيق…</p>
+        <div class="err" id="err">
+          <p>
+            افتح التطبيق مرة وأثناء وجود إنترنت بعد تسجيل الدخول، ثم أعد
+            المحاولة بدون نت.
+          </p>
+          <button type="button" id="retry">إعادة المحاولة</button>
+        </div>
+      </div>
+    </div>
+    <script>
+      (function () {
+        var PATHS = ["/pos", "/m", "/dashboard", "/programs", "/login", "/manufacturing"];
+        var msg = document.getElementById("msg");
+        var err = document.getElementById("err");
+        var spin = document.getElementById("spin");
+
+        function showErr() {
+          spin.style.display = "none";
+          msg.style.display = "none";
+          err.classList.add("show");
+        }
+
+        async function findCachedPath() {
+          if (!("caches" in window)) return null;
+          var keys = await caches.keys();
+          for (var i = 0; i < keys.length; i++) {
+            var cache = await caches.open(keys[i]);
+            for (var j = 0; j < PATHS.length; j++) {
+              var hit = await cache.match(PATHS[j], { ignoreSearch: true });
+              if (hit && hit.ok) return PATHS[j];
+            }
+          }
+          return null;
+        }
+
+        function preferredPath() {
+          try {
+            var last = localStorage.getItem("windoor-last-path");
+            if (last && last.charAt(0) === "/" && last.indexOf("/login") !== 0) {
+              return last.split("?")[0];
+            }
+          } catch (e) {}
+          return null;
+        }
+
+        async function boot() {
+          try {
+            var last = preferredPath();
+            var path = null;
+            // Prefer last visited route if it is cached
+            if (last && "caches" in window) {
+              var keys = await caches.keys();
+              for (var i = 0; i < keys.length && !path; i++) {
+                var cache = await caches.open(keys[i]);
+                var hit = await cache.match(last, { ignoreSearch: true });
+                if (hit && hit.ok) path = last;
+              }
+            }
+            if (!path) path = await findCachedPath();
+            if (path) {
+              location.replace(path);
+              return;
+            }
+            // Soft try — never bounce to `/` (causes redirect loops with SW)
+            location.replace(
+              navigator.onLine === false ? "/pos" : "/login?next=/programs"
+            );
+          } catch (e) {
+            showErr();
+          }
+          setTimeout(function () {
+            if (document.visibilityState !== "hidden") showErr();
+          }, 2500);
+        }
+
+        document.getElementById("retry").onclick = function () {
+          err.classList.remove("show");
+          spin.style.display = "block";
+          msg.style.display = "block";
+          msg.textContent = "جاري المحاولة…";
+          boot();
+        };
+
+        boot();
+      })();
+    </script>
+  </body>
+</html>
