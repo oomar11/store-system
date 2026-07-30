@@ -397,6 +397,14 @@ export default function ProductDetailPage() {
             setShowEdit(false);
             void load();
           }}
+          onCategoryCreated={(category) => {
+            setCategories((prev) => {
+              if (prev.some((c) => c.id === category.id)) return prev;
+              return [...prev, category].sort((a, b) =>
+                a.name.localeCompare(b.name, "ar")
+              );
+            });
+          }}
         />
       )}
     </div>
