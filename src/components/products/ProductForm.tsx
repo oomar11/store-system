@@ -16,7 +16,7 @@ import {
 } from "@/lib/price-tiers";
 import { useToast } from "@/components/ui/Toast";
 import type { Product, Category, PriceTier } from "@/types";
-import { Shuffle } from "lucide-react";
+import { Plus, Shuffle } from "lucide-react";
 
 function generateRandomSku(): string {
   const ts = Date.now().toString(36).toUpperCase().slice(-4);
@@ -24,14 +24,24 @@ function generateRandomSku(): string {
   return `P${ts}${rand}`.slice(0, 12);
 }
 
+const CREATE_CATEGORY_ID = "__create__";
+
 interface ProductFormProps {
   product: Product | null;
   categories: Category[];
   onClose: () => void;
   onSave: () => void;
+  /** يُستدعى بعد إنشاء قسم جديد عشان القائمة الأب تتحدث */
+  onCategoryCreated?: (category: Category) => void;
 }
 
-export function ProductForm({ product, categories, onClose, onSave }: ProductFormProps) {
+export function ProductForm({
+  product,
+  categories,
+  onClose,
+  onSave,
+  onCategoryCreated,
+}: ProductFormProps) {
   const [form, setForm] = useState({
     name: product?.name || "",
     sku: product?.sku || "",
@@ -50,8 +60,11 @@ export function ProductForm({ product, categories, onClose, onSave }: ProductFor
   /** Non-default tier id → sell price string for controlled inputs */
   const [tierPrices, setTierPrices] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
+  const [creatingCategory, setCreatingCategory] = useState(false);
   const [error, setError] = useState("");
   const [needsSqlSetup, setNeedsSqlSetup] = useState(false);
+  /** أقسام أُنشئت أثناء فتح الفورم قبل ما الأب يحدّث القائمة */
+  const [createdCategories, setCreatedCategories] = useState<Category[]>([]);
   const [categoryQuery, setCategoryQuery] = useState(() => {
     if (!product?.category_id) return "";
     return categories.find((c) => c.id === product.category_id)?.name || "";
@@ -59,9 +72,18 @@ export function ProductForm({ product, categories, onClose, onSave }: ProductFor
   const [showCategoryList, setShowCategoryList] = useState(false);
   const [activeCategoryIndex, setActiveCategoryIndex] = useState(0);
   const supabase = createClient();
-  const { error: toastError } = useToast();
+  const { error: toastError, success: toastSuccess } = useToast();
 
   const nonDefaultTiers = tiers.filter((t) => !t.is_default);
+
+  const localCategories = useMemo(() => {
+    const map = new Map<string, Category>();
+    for (const c of categories) map.set(c.id, c);
+    for (const c of createdCategories) map.set(c.id, c);
+    return [...map.values()].sort((a, b) =>
+      a.name.localeCompare(b.name, "ar")
+    );
+  }, [categories, createdCategories]);
 
   useEffect(() => {
     if (product) return;
@@ -89,19 +111,85 @@ export function ProductForm({ product, categories, onClose, onSave }: ProductFor
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product]);
 
+  const trimmedCategoryQuery = categoryQuery.trim();
+  const exactCategoryMatch = useMemo(() => {
+    if (!trimmedCategoryQuery) return null;
+    const key = trimmedCategoryQuery.toLowerCase();
+    return (
+      localCategories.find((c) => c.name.trim().toLowerCase() === key) || null
+    );
+  }, [localCategories, trimmedCategoryQuery]);
+
+  const canCreateCategory =
+    Boolean(trimmedCategoryQuery) && !exactCategoryMatch;
+
   const categoryOptions = useMemo(() => {
     const none = { id: "", name: "بدون قسم" };
-    const filtered = categories.filter((c) =>
+    const filtered = localCategories.filter((c) =>
       smartSearchMatch(categoryQuery, [c.name])
     );
-    if (!categoryQuery.trim()) return [none, ...categories];
-    return [none, ...filtered];
-  }, [categories, categoryQuery]);
+    const base = !trimmedCategoryQuery
+      ? [none, ...localCategories]
+      : [none, ...filtered];
+    if (canCreateCategory) {
+      return [
+        ...base,
+        {
+          id: CREATE_CATEGORY_ID,
+          name: `إنشاء قسم «${trimmedCategoryQuery}»`,
+        },
+      ];
+    }
+    return base;
+  }, [
+    localCategories,
+    categoryQuery,
+    trimmedCategoryQuery,
+    canCreateCategory,
+  ]);
 
   function selectCategory(id: string, name: string) {
     setForm((prev) => ({ ...prev, category_id: id }));
     setCategoryQuery(id ? name : "");
     setShowCategoryList(false);
+  }
+
+  async function createCategory(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      toastError("اكتب اسم القسم أولاً");
+      setShowCategoryList(true);
+      return;
+    }
+    const existing = localCategories.find(
+      (c) => c.name.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    if (existing) {
+      selectCategory(existing.id, existing.name);
+      return;
+    }
+
+    setCreatingCategory(true);
+    const { data, error: insertError } = await supabase
+      .from("categories")
+      .insert({ name: trimmed, description: null })
+      .select("*")
+      .single();
+
+    setCreatingCategory(false);
+
+    if (insertError || !data) {
+      toastError(insertError?.message || "تعذر إنشاء القسم");
+      return;
+    }
+
+    const created = data as Category;
+    setCreatedCategories((prev) =>
+      prev.some((c) => c.id === created.id) ? prev : [...prev, created]
+    );
+    selectCategory(created.id, created.name);
+    onCategoryCreated?.(created);
+    toastSuccess(`تم إنشاء قسم «${created.name}»`);
   }
 
   function handleCategoryKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -129,7 +217,12 @@ export function ProductForm({ product, categories, onClose, onSave }: ProductFor
       e.preventDefault();
       const idx = Math.min(activeCategoryIndex, categoryOptions.length - 1);
       const opt = categoryOptions[idx];
-      if (opt) selectCategory(opt.id, opt.name);
+      if (!opt) return;
+      if (opt.id === CREATE_CATEGORY_ID) {
+        void createCategory(trimmedCategoryQuery);
+        return;
+      }
+      selectCategory(opt.id, opt.name);
     }
   }
 
@@ -369,52 +462,91 @@ export function ProductForm({ product, categories, onClose, onSave }: ProductFor
             <label className="mb-1 block text-sm font-medium text-gray-700">
               القسم
             </label>
-            <input
-              type="text"
-              value={categoryQuery}
-              onChange={(e) => {
-                setCategoryQuery(e.target.value);
-                setShowCategoryList(true);
-                setActiveCategoryIndex(0);
-                if (!e.target.value.trim()) {
-                  setForm((prev) => ({ ...prev, category_id: "" }));
-                }
-              }}
-              onFocus={() => setShowCategoryList(true)}
-              onBlur={() => {
-                window.setTimeout(() => setShowCategoryList(false), 150);
-              }}
-              onKeyDown={handleCategoryKeyDown}
-              placeholder="ابحث عن قسم…"
-              role="combobox"
-              aria-expanded={showCategoryList}
-              aria-autocomplete="list"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-            />
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={categoryQuery}
+                onChange={(e) => {
+                  setCategoryQuery(e.target.value);
+                  setShowCategoryList(true);
+                  setActiveCategoryIndex(0);
+                  if (!e.target.value.trim()) {
+                    setForm((prev) => ({ ...prev, category_id: "" }));
+                  }
+                }}
+                onFocus={() => setShowCategoryList(true)}
+                onBlur={() => {
+                  window.setTimeout(() => setShowCategoryList(false), 150);
+                }}
+                onKeyDown={handleCategoryKeyDown}
+                placeholder="ابحث أو أنشئ قسماً…"
+                role="combobox"
+                aria-expanded={showCategoryList}
+                aria-controls="product-category-listbox"
+                aria-autocomplete="list"
+                disabled={creatingCategory}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:opacity-60"
+              />
+              <button
+                type="button"
+                title="إضافة قسم جديد"
+                disabled={creatingCategory}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  if (trimmedCategoryQuery) {
+                    void createCategory(trimmedCategoryQuery);
+                    return;
+                  }
+                  setShowCategoryList(true);
+                  toastError("اكتب اسم القسم ثم اضغط +");
+                }}
+                className="inline-flex shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </div>
             {showCategoryList && (
               <ul
+                id="product-category-listbox"
                 role="listbox"
                 className="absolute z-20 mt-1 max-h-48 w-full overflow-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
               >
-                {categoryOptions.map((opt, index) => (
-                  <li key={opt.id || "none"}>
-                    <button
-                      type="button"
-                      id={`category-option-${index}`}
-                      role="option"
-                      aria-selected={index === activeCategoryIndex}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => selectCategory(opt.id, opt.name)}
-                      className={`block w-full px-3 py-2 text-right text-sm ${
-                        index === activeCategoryIndex
-                          ? "bg-blue-50 text-blue-800"
-                          : "text-gray-700 hover:bg-gray-50"
-                      }`}
-                    >
-                      {opt.name}
-                    </button>
-                  </li>
-                ))}
+                {categoryOptions.map((opt, index) => {
+                  const isCreate = opt.id === CREATE_CATEGORY_ID;
+                  return (
+                    <li key={opt.id || "none"}>
+                      <button
+                        type="button"
+                        id={`category-option-${index}`}
+                        role="option"
+                        aria-selected={index === activeCategoryIndex}
+                        disabled={creatingCategory && isCreate}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          if (isCreate) {
+                            void createCategory(trimmedCategoryQuery);
+                            return;
+                          }
+                          selectCategory(opt.id, opt.name);
+                        }}
+                        className={`flex w-full items-center gap-1.5 px-3 py-2 text-right text-sm ${
+                          isCreate
+                            ? index === activeCategoryIndex
+                              ? "bg-blue-100 font-semibold text-blue-800"
+                              : "bg-blue-50 font-semibold text-blue-700 hover:bg-blue-100"
+                            : index === activeCategoryIndex
+                              ? "bg-blue-50 text-blue-800"
+                              : "text-gray-700 hover:bg-gray-50"
+                        }`}
+                      >
+                        {isCreate && <Plus className="h-3.5 w-3.5 shrink-0" />}
+                        {creatingCategory && isCreate
+                          ? "جاري إنشاء القسم..."
+                          : opt.name}
+                      </button>
+                    </li>
+                  );
+                })}
                 {categoryOptions.length === 0 && (
                   <li className="px-3 py-2 text-sm text-gray-400">لا نتائج</li>
                 )}
