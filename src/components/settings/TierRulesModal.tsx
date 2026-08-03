@@ -258,8 +258,9 @@ export function TierRulesModal({ tier, onClose }: Props) {
   return (
     <Modal open onClose={onClose} title={`قواعد «${tier.name}»`} wide>
       <p className="mb-4 text-xs text-[var(--muted)]">
-        الأولوية عند البيع: سعر ثابت من بطاقة الصنف ← خصم منتج ← خصم قسم ← سعر
-        التجزئة. النسب تُحسب من سعر التجزئة.
+        الأولوية عند البيع وعرض السعر: سعر ثابت من بطاقة الصنف ← خصم منتج ← خصم
+        قسم ← سعر التجزئة. النسب تُحسب من سعر التجزئة. بدون قواعد هنا وبدون سعر
+        ثابت على الصنف، عملاء هذه الشريحة يدفعون التجزئة.
       </p>
 
       <div className="mb-4 flex gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface-muted)] p-1">

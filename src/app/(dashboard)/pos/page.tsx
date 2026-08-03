@@ -226,11 +226,15 @@ export default function POSPage({
 } = {}) {
   const router = useRouter();
   const [mode, setMode] = useState<PosMode>("sale");
+  const modeRef = useRef<PosMode>(mode);
+  modeRef.current = mode;
   const [products, setProducts] = useState<Product[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const selectedCustomerRef = useRef<Customer | null>(null);
+  selectedCustomerRef.current = selectedCustomer;
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   const [searchTerm, setSearchTerm] = useUrlSearchTerm();
   const [partySearch, setPartySearch] = useState("");
@@ -650,15 +654,33 @@ export default function POSPage({
       local: async () => {
         const snap = await getSnapshot();
         if (!snap?.customers?.length) return null;
+        const tierById = new Map(
+          (snap.tierPricing?.tiers || []).map((t) => [t.id, t])
+        );
         return snap.customers
           .filter((c) => c.is_active !== false)
-          .map((c) => ({
-            id: c.id,
-            name: c.name,
-            phone: c.phone,
-            balance: c.balance,
-            price_tier_id: c.price_tier_id ?? null,
-          })) as typeof customers;
+          .map((c) => {
+            const tierId = c.price_tier_id ?? null;
+            const nested =
+              c.price_tier ??
+              (tierId ? tierById.get(tierId) ?? null : null);
+            return {
+              id: c.id,
+              name: c.name,
+              phone: c.phone,
+              balance: c.balance,
+              price_tier_id: tierId,
+              price_tier: nested
+                ? {
+                    id: nested.id,
+                    name: nested.name,
+                    is_default: nested.is_default,
+                    sort_order: 0,
+                    created_at: "",
+                  }
+                : null,
+            };
+          }) as typeof customers;
       },
       network: async () => {
         const { data, error } = await withTimeout(
@@ -687,12 +709,33 @@ export default function POSPage({
         return tierPricingFromSnapshot(snap);
       },
       network: async () => loadTierPricingContext(supabase),
-      apply: (data) => setTierPricing(data),
+      apply: (data) => {
+        setTierPricing(data);
+        // Re-price if a tiered customer was already selected before context arrived
+        const customer = selectedCustomerRef.current;
+        if (
+          customer?.price_tier_id &&
+          !isPurchaseSideMode(modeRef.current)
+        ) {
+          const tierId = customer.price_tier_id;
+          setCart((prev) =>
+            prev.map((item) => {
+              const unitPrice = resolveSellPrice(item.product, tierId, data);
+              return {
+                ...item,
+                unit_price: unitPrice,
+                total: unitPrice * item.quantity - item.discount,
+              };
+            })
+          );
+        }
+      },
     });
   }
 
   function applyCustomerPricing(customer: Customer | null) {
-    if (mode !== "sale") return;
+    // Sale + quote (sell-side) — purchase modes use buy/sell basis instead
+    if (isPurchaseSide) return;
     const tierId = customer?.price_tier_id ?? null;
     setCart((prev) =>
       prev.map((item) => {
@@ -1312,14 +1355,11 @@ export default function POSPage({
         ? product.sell_price
         : product.buy_price;
     }
-    if (mode === "sale") {
-      return resolveSellPrice(
-        product,
-        selectedCustomer?.price_tier_id ?? null,
-        tierPricing
-      );
-    }
-    return product.sell_price;
+    return resolveSellPrice(
+      product,
+      selectedCustomer?.price_tier_id ?? null,
+      tierPricing
+    );
   }
 
   function changePurchaseBasis(next: "buy" | "sell") {
@@ -2612,13 +2652,11 @@ export default function POSPage({
                   ? purchasePriceBasis === "sell"
                     ? product.sell_price
                     : product.buy_price
-                  : mode === "sale"
-                    ? resolveSellPrice(
-                        product,
-                        selectedCustomer?.price_tier_id ?? null,
-                        tierPricing
-                      )
-                    : product.sell_price;
+                  : resolveSellPrice(
+                      product,
+                      selectedCustomer?.price_tier_id ?? null,
+                      tierPricing
+                    );
                 const pack = Math.max(1, Number(product.pack_size) || 1);
                 const canAdd = allowsOutOfStock || !isOutOfStock;
                 return (

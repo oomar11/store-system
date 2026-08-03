@@ -127,6 +127,7 @@ export async function listPriceTiers(
   const { data, error } = await supabase
     .from("price_tiers")
     .select("id, name, is_default, sort_order, created_at")
+    .is("deleted_at", null)
     .order("sort_order", { ascending: true })
     .order("name", { ascending: true });
   if (error) throw new Error(error.message);

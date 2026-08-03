@@ -202,6 +202,12 @@ export type SnapshotParty = {
   balance: number;
   kind: "customer" | "supplier";
   price_tier_id?: string | null;
+  /** Nested tier for POS badge offline (optional, rebuilt from price_tiers) */
+  price_tier?: {
+    id: string;
+    name: string;
+    is_default: boolean;
+  } | null;
   is_active?: boolean;
   last_activity_at?: string | null;
 };
@@ -217,6 +223,11 @@ export type SnapshotSafe = {
 export type SnapshotSettings = Record<string, unknown>;
 
 export type SnapshotTierPricing = {
+  tiers?: Array<{
+    id: string;
+    name: string;
+    is_default: boolean;
+  }>;
   tierPrices: Array<{ product_id: string; tier_id: string; sell_price: number }>;
   categoryDiscounts: Array<{
     tier_id: string;
