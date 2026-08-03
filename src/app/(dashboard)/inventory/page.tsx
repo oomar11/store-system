@@ -22,7 +22,6 @@ import { InventorySheetPreview } from "@/components/print/InventorySheetPreview"
 import { TableRowActions, type RowAction } from "@/components/ui/TableRowActions";
 import { useRowContextMenu, toContextMenuItems } from "@/components/ui/ContextMenu";
 import {
-  getSnapshot,
   isBrowserOnline,
   TimeoutError,
   withTimeout,
