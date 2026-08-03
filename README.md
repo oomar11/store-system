@@ -75,4 +75,8 @@ src/
 npx vercel --prod --yes
 ```
 
-Project: `store-system` / `prj_L9xKjfnbcl4hxIaTuz7i0mNcfrZs`
+**Production (canonical):** https://store-system-iota.vercel.app  
+Mobile: https://store-system-iota.vercel.app/m  
+
+Project: `store-system` / `prj_L9xKjfnbcl4hxIaTuz7i0mNcfrZs`  
+Do not treat `store-system-rho.vercel.app` or Vercel Preview URLs as the live store.

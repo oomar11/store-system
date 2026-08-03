@@ -39,6 +39,10 @@ Use **npm**: `npm install`, `npm run dev`, `npm run build`
 npx vercel --prod --yes
 ```
 
+**Production URL (canonical):** https://store-system-iota.vercel.app  
+Mobile: https://store-system-iota.vercel.app/m  
+Always verify changes on this host (not `store-system-rho` or Preview URLs).
+
 ## Commit Attribution
 AI commits MUST include:
 ```
