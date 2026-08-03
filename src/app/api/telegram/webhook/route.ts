@@ -88,6 +88,7 @@ export async function POST(request: NextRequest) {
       ok: true,
       replied: true,
       send_ok: sent.ok,
+      send_error: sent.ok ? undefined : sent.description,
       used_tools: reply.usedTools,
     });
   } catch (e) {
