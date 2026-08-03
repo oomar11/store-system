@@ -30,6 +30,13 @@ function usernameFromEmail(email: string) {
 function mapCreateUserError(message: string): string {
   const m = message.toLowerCase();
   if (
+    /service_role|service role|supabase_service|مفتاح خدمة|غير مضبوط على السيرفر/.test(
+      m
+    )
+  ) {
+    return message;
+  }
+  if (
     /already|exists|registered|duplicate|unique|23505|users_email/.test(m)
   ) {
     if (/email|بريد/.test(m)) return "البريد الإلكتروني مستخدم بالفعل";
