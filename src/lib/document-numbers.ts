@@ -19,7 +19,17 @@ export async function allocateDocumentNumber(
   });
 
   if (error) {
-    throw new Error(error.message || "تعذر توليد رقم المستند");
+    const msg = error.message || "تعذر توليد رقم المستند";
+    // PostgREST HTTP 300 when function overloads are ambiguous
+    if (
+      /300|multiple.?choices|could not choose|PGRST203/i.test(msg) ||
+      error.code === "PGRST203"
+    ) {
+      throw new Error(
+        "تعذر توليد رقم المستند: تعارض في دالة الترقيم (next_document_number) — يلزم إصلاح الـ overloads في قاعدة البيانات"
+      );
+    }
+    throw new Error(msg);
   }
 
   const value = typeof data === "string" ? data.trim() : "";
