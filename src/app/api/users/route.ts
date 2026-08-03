@@ -2,10 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/backup/auth";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 import {
-  createServiceClient,
-  MISSING_SERVICE_ENV_AR,
   tryCreateServiceClient,
 } from "@/lib/supabase-service";
+import { callAdminUsersFunction } from "@/lib/admin-users-fn";
 import {
   isUsingTemplate,
   normalizePermissions,
@@ -103,15 +102,50 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "الدور غير صالح" }, { status: 400 });
     }
 
-    if (!tryCreateServiceClient()) {
-      return NextResponse.json(
-        { error: MISSING_SERVICE_ENV_AR },
-        { status: 503 }
-      );
+    const email = `${username}@store.local`;
+    const service = tryCreateServiceClient();
+
+    if (!service) {
+      const viaFn = await callAdminUsersFunction<{
+        user?: {
+          id: string;
+          email: string;
+          full_name: string | null;
+          role: string;
+          is_active: boolean;
+          permissions: string[] | null;
+        };
+      }>({
+        action: "create",
+        email,
+        password,
+        full_name: fullName,
+        role,
+        permissions,
+      });
+      if (!viaFn.ok) {
+        return NextResponse.json(
+          { error: viaFn.error },
+          { status: viaFn.status }
+        );
+      }
+      const created = viaFn.data.user;
+      return NextResponse.json({
+        ok: true,
+        user: {
+          id: created?.id,
+          email: created?.email ?? email,
+          full_name: created?.full_name ?? fullName,
+          role: created?.role ?? role,
+          is_active: created?.is_active ?? true,
+          permissions:
+            created?.permissions ?? permissions ?? templatePermissions(role),
+          username,
+        },
+      });
     }
 
-    const email = `${username}@store.local`;
-    const client = createServiceClient();
+    const client = service;
 
     const { data: created, error: createError } =
       await client.auth.admin.createUser({
