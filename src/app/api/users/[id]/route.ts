@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/backup/auth";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 import {
-  createServiceClient,
   MISSING_SERVICE_ENV_AR,
   tryCreateServiceClient,
 } from "@/lib/supabase-service";
+import { callAdminUsersFunction } from "@/lib/admin-users-fn";
 import {
   isUsingTemplate,
   normalizePermissions,
@@ -133,13 +133,6 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 
     const needsAdminAuth = body.password !== undefined;
 
-    if (needsAdminAuth && !service) {
-      return NextResponse.json(
-        { error: MISSING_SERVICE_ENV_AR },
-        { status: 503 }
-      );
-    }
-
     if (Object.keys(updates).length > 0) {
       const writer = service ?? client;
       const { error: updateError } = await writer
@@ -162,7 +155,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       }
     }
 
-    if (body.password !== undefined) {
+    if (needsAdminAuth) {
       const password = String(body.password || "");
       if (password.length < 6) {
         return NextResponse.json(
@@ -170,12 +163,29 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           { status: 400 }
         );
       }
-      const admin = service ?? createServiceClient();
-      const { error: passError } = await admin.auth.admin.updateUserById(id, {
-        password,
-      });
-      if (passError) {
-        return NextResponse.json({ error: passError.message }, { status: 500 });
+      if (service) {
+        const { error: passError } = await service.auth.admin.updateUserById(
+          id,
+          { password }
+        );
+        if (passError) {
+          return NextResponse.json(
+            { error: passError.message },
+            { status: 500 }
+          );
+        }
+      } else {
+        const viaFn = await callAdminUsersFunction({
+          action: "set_password",
+          user_id: id,
+          password,
+        });
+        if (!viaFn.ok) {
+          return NextResponse.json(
+            { error: viaFn.error },
+            { status: viaFn.status }
+          );
+        }
       }
     }
 
@@ -245,13 +255,8 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
   }
 
   try {
-    if (!tryCreateServiceClient()) {
-      return NextResponse.json(
-        { error: MISSING_SERVICE_ENV_AR },
-        { status: 503 }
-      );
-    }
-    const client = createServiceClient();
+    const service = tryCreateServiceClient();
+    const client = service ?? (await createServerSupabaseClient());
 
     const { data: target, error: targetError } = await client
       .from("profiles")
@@ -277,12 +282,25 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
       }
     }
 
-    const { error: deleteError } = await client.auth.admin.deleteUser(id);
-    if (deleteError) {
-      return NextResponse.json(
-        { error: deleteError.message || "تعذر حذف المستخدم" },
-        { status: 500 }
-      );
+    if (service) {
+      const { error: deleteError } = await service.auth.admin.deleteUser(id);
+      if (deleteError) {
+        return NextResponse.json(
+          { error: deleteError.message || "تعذر حذف المستخدم" },
+          { status: 500 }
+        );
+      }
+    } else {
+      const viaFn = await callAdminUsersFunction({
+        action: "delete",
+        user_id: id,
+      });
+      if (!viaFn.ok) {
+        return NextResponse.json(
+          { error: viaFn.error },
+          { status: viaFn.status }
+        );
+      }
     }
 
     await logAuditEvent(client, {
