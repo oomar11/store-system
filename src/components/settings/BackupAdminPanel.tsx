@@ -10,6 +10,9 @@ import {
   Loader2,
   Save,
   HardDrive,
+  Bot,
+  Link2,
+  Unlink,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase";
 import { clearLocalBusinessData } from "@/lib/offline";
@@ -32,6 +35,21 @@ type TelegramPublic = {
   configured: boolean;
   source: string;
   editable_chat_id: string;
+};
+
+type AiSetupStatus = {
+  telegram_configured: boolean;
+  gemini_configured: boolean;
+  webhook_secret_configured: boolean;
+  webhook_url: string;
+  model: string;
+  webhook: {
+    ok?: boolean;
+    url?: string;
+    pending_update_count?: number;
+    last_error_message?: string;
+    description?: string;
+  } | null;
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -59,6 +77,7 @@ export function BackupAdminPanel() {
   const [tgChatId, setTgChatId] = useState("");
   const [tgToken, setTgToken] = useState("");
   const [tgMeta, setTgMeta] = useState<TelegramPublic | null>(null);
+  const [aiStatus, setAiStatus] = useState<AiSetupStatus | null>(null);
 
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restoreConfirm, setRestoreConfirm] = useState("");
@@ -100,10 +119,47 @@ export function BackupAdminPanel() {
     }
   }, []);
 
+  const loadAiStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/telegram/ai-setup");
+      if (!res.ok) return;
+      const data = (await res.json()) as AiSetupStatus;
+      setAiStatus(data);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   useEffect(() => {
     loadLastRun();
     loadTelegram();
-  }, [loadLastRun, loadTelegram]);
+    loadAiStatus();
+  }, [loadLastRun, loadTelegram, loadAiStatus]);
+
+  async function aiAction(action: "register" | "unregister" | "test") {
+    setBusy(`ai-${action}`);
+    try {
+      const res = await fetch("/api/telegram/ai-setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "فشل العملية");
+      if (action === "register") {
+        flash("ok", "تم تفعيل مساعد جارفس على تيليجرام");
+      } else if (action === "unregister") {
+        flash("ok", "تم إيقاف webhook المساعد");
+      } else {
+        flash("ok", "تم إرسال رسالة اختبار المساعد");
+      }
+      await loadAiStatus();
+    } catch (e) {
+      flash("err", e instanceof Error ? e.message : "فشل العملية");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function saveTelegram() {
     setBusy("save-tg");
@@ -372,6 +428,101 @@ export function BackupAdminPanel() {
               <Save className="h-4 w-4" />
             )}
             حفظ إعدادات التيليجرام
+          </button>
+        </div>
+      </SettingsCard>
+
+      <SettingsCard
+        title="مساعد جارفس (تيليجرام + Gemini)"
+        description="اسأل عن المبيعات والمخزون والأرصدة والخزنة من تيليجرام. قراءة وتحليل فقط — بدون تعديل بيانات. يتطلب GEMINI_API_KEY و TELEGRAM_WEBHOOK_SECRET في بيئة Vercel."
+        icon={Bot}
+      >
+        {aiStatus && (
+          <div className="mb-4 space-y-1 rounded-lg bg-[var(--surface-subtle)] px-3 py-2 text-xs text-[var(--muted)]">
+            <div>
+              Gemini:{" "}
+              <span
+                className={
+                  aiStatus.gemini_configured
+                    ? "font-medium text-green-700"
+                    : "font-medium text-red-700"
+                }
+              >
+                {aiStatus.gemini_configured
+                  ? `جاهز (${aiStatus.model})`
+                  : "غير مضبوط"}
+              </span>
+            </div>
+            <div>
+              Webhook secret:{" "}
+              <span
+                className={
+                  aiStatus.webhook_secret_configured
+                    ? "font-medium text-green-700"
+                    : "font-medium text-amber-700"
+                }
+              >
+                {aiStatus.webhook_secret_configured ? "مضبوط" : "ناقص"}
+              </span>
+            </div>
+            <div>
+              Webhook:{" "}
+              <span className="font-medium text-[var(--foreground)] break-all">
+                {aiStatus.webhook?.url || "غير مسجّل"}
+              </span>
+              {aiStatus.webhook?.last_error_message ? (
+                <span className="mt-1 block text-red-600">
+                  {aiStatus.webhook.last_error_message}
+                </span>
+              ) : null}
+            </div>
+            <div className="text-[10px] opacity-80 break-all">
+              الهدف: {aiStatus.webhook_url}
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={!!busy}
+            onClick={() => aiAction("register")}
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
+          >
+            {busy === "ai-register" ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Link2 className="h-4 w-4" />
+            )}
+            تفعيل المساعد
+          </button>
+
+          <button
+            type="button"
+            disabled={!!busy}
+            onClick={() => aiAction("test")}
+            className="inline-flex items-center gap-2 rounded-lg border border-emerald-600 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
+          >
+            {busy === "ai-test" ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Bot className="h-4 w-4" />
+            )}
+            اختبار رسالة
+          </button>
+
+          <button
+            type="button"
+            disabled={!!busy}
+            onClick={() => aiAction("unregister")}
+            className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            {busy === "ai-unregister" ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Unlink className="h-4 w-4" />
+            )}
+            إيقاف الـ webhook
           </button>
         </div>
       </SettingsCard>
