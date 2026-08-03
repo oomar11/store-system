@@ -110,6 +110,7 @@ import {
   Plus,
   ReceiptText,
   ShoppingCart,
+  Tags,
   X,
 } from "lucide-react";
 
@@ -306,6 +307,8 @@ export default function POSPage({
   const [heldCarts, setHeldCarts] = useState<HeldCartSnapshot[]>([]);
   const [showHeldPanel, setShowHeldPanel] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showTierMenu, setShowTierMenu] = useState(false);
+  const tierMenuRef = useRef<HTMLDivElement>(null);
   const { profile, canEditPrices } = useAuth();
   const subject = profileSubject(profile);
   const canPurchase = canAccess(subject, "purchases");
@@ -318,6 +321,10 @@ export default function POSPage({
   const isEditing = !!(editingInvoiceId || editingDocId);
   const posBase = embedded ? "/m/pos" : "/pos";
   const posUrl = (m: PosMode = mode) => modeToUrl(m, posBase);
+  const selectedTierName =
+    selectedTierId == null
+      ? null
+      : priceTiers.find((t) => t.id === selectedTierId)?.name || null;
 
   draftSnapRef.current = {
     userId: profile?.id,
@@ -427,8 +434,30 @@ export default function POSPage({
   }
 
   useEffect(() => {
+    if (isPurchaseSide) setShowTierMenu(false);
+  }, [isPurchaseSide]);
+
+  useEffect(() => {
     setHeldCarts(loadHeldCarts(profile?.id, mode));
   }, [profile?.id, mode]);
+
+  useEffect(() => {
+    if (!showTierMenu) return;
+    function onDocClick(e: MouseEvent) {
+      if (!tierMenuRef.current?.contains(e.target as Node)) {
+        setShowTierMenu(false);
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowTierMenu(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [showTierMenu]);
 
   useEffect(() => {
     async function boot() {
@@ -2596,6 +2625,99 @@ export default function POSPage({
               <ShoppingCart className="h-3.5 w-3.5 max-lg:h-4 max-lg:w-4" />
               فاتورة مشتريات
             </button>
+              </>
+            )}
+            <div className="relative" ref={tierMenuRef}>
+              <button
+                type="button"
+                title={
+                  selectedTierName
+                    ? `شريحة الخصم: ${selectedTierName}`
+                    : "شريحة الخصم على الفاتورة"
+                }
+                aria-label="شريحة الخصم على الفاتورة"
+                aria-expanded={showTierMenu}
+                disabled={isPurchaseSide}
+                onClick={() => {
+                  if (isPurchaseSide) return;
+                  setShowTierMenu((v) => !v);
+                }}
+                className={`relative inline-flex min-h-9 min-w-9 items-center justify-center rounded-lg border transition-colors max-lg:min-h-11 max-lg:min-w-11 ${
+                  isPurchaseSide
+                    ? "cursor-not-allowed border-gray-100 text-gray-300"
+                    : selectedTierId
+                      ? "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                      : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                <Tags className="h-4 w-4" />
+                {selectedTierId && !isPurchaseSide ? (
+                  <span className="absolute -left-0.5 -top-0.5 h-2 w-2 rounded-full bg-blue-600" />
+                ) : null}
+              </button>
+              {showTierMenu && !isPurchaseSide && (
+                <div className="absolute left-0 top-full z-30 mt-1 w-52 overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg">
+                  <p className="border-b border-gray-100 px-3 py-1.5 text-[11px] font-semibold text-gray-500">
+                    شريحة الخصم
+                  </p>
+                  {priceTiers.some((t) => !t.is_default) ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          selectPriceTier(null);
+                          setShowTierMenu(false);
+                        }}
+                        className={`flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-blue-50 ${
+                          !selectedTierId
+                            ? "font-bold text-blue-700"
+                            : "text-gray-700"
+                        }`}
+                      >
+                        <span>تجزئة</span>
+                        {!selectedTierId ? (
+                          <span className="text-[10px] text-blue-600">✓</span>
+                        ) : null}
+                      </button>
+                      {priceTiers
+                        .filter((t) => !t.is_default)
+                        .map((t) => (
+                          <button
+                            key={t.id}
+                            type="button"
+                            onClick={() => {
+                              selectPriceTier(t.id);
+                              setShowTierMenu(false);
+                            }}
+                            className={`flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-blue-50 ${
+                              selectedTierId === t.id
+                                ? "font-bold text-blue-700"
+                                : "text-gray-700"
+                            }`}
+                          >
+                            <span>{t.name}</span>
+                            {selectedTierId === t.id ? (
+                              <span className="text-[10px] text-blue-600">✓</span>
+                            ) : null}
+                          </button>
+                        ))}
+                    </>
+                  ) : (
+                    <div className="px-3 py-2 text-xs text-amber-700">
+                      لا توجد شرائح —{" "}
+                      <Link
+                        href="/settings?tab=tiers"
+                        className="font-semibold underline"
+                        onClick={() => setShowTierMenu(false)}
+                      >
+                        أنشئ من الإعدادات
+                      </Link>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            {canPurchase && (
             <button
               type="button"
               onClick={() => switchMode("purchase_order")}
@@ -2608,7 +2730,6 @@ export default function POSPage({
               <ClipboardList className="h-3.5 w-3.5 max-lg:h-4 max-lg:w-4" />
               طلب مشتريات
             </button>
-              </>
             )}
           </div>
         )}
@@ -3104,62 +3225,6 @@ export default function POSPage({
                   >
                     <Plus className="h-4 w-4" />
                   </button>
-                </div>
-                <div className="mt-2 rounded-xl border border-blue-200 bg-blue-50/70 p-2.5">
-                  <div className="mb-1.5 flex items-center justify-between gap-2">
-                    <p className="text-xs font-bold text-blue-900">
-                      شريحة الخصم على الفاتورة
-                    </p>
-                    <span className="text-[10px] font-medium text-blue-700/80">
-                      مش محتاج عميل
-                    </span>
-                  </div>
-                  {priceTiers.some((t) => !t.is_default) ? (
-                    <>
-                      <div className="flex flex-wrap gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => selectPriceTier(null)}
-                          className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors max-lg:min-h-10 ${
-                            !selectedTierId
-                              ? "bg-blue-600 text-white"
-                              : "border border-blue-200 bg-white text-blue-800 hover:bg-blue-100"
-                          }`}
-                        >
-                          تجزئة
-                        </button>
-                        {priceTiers
-                          .filter((t) => !t.is_default)
-                          .map((t) => (
-                            <button
-                              key={t.id}
-                              type="button"
-                              onClick={() => selectPriceTier(t.id)}
-                              className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors max-lg:min-h-10 ${
-                                selectedTierId === t.id
-                                  ? "bg-blue-600 text-white"
-                                  : "border border-blue-200 bg-white text-blue-800 hover:bg-blue-100"
-                              }`}
-                            >
-                              {t.name}
-                            </button>
-                          ))}
-                      </div>
-                      <p className="mt-1.5 text-[11px] text-blue-800/70">
-                        اختَر الشريحة لتحديث أسعار الأصناف فوراً — حتى بدون عميل
-                      </p>
-                    </>
-                  ) : (
-                    <p className="text-xs text-amber-800">
-                      لا توجد شرائح بعد — أنشئ شريحة من{" "}
-                      <Link
-                        href="/settings?tab=tiers"
-                        className="font-semibold underline underline-offset-2"
-                      >
-                        الإعدادات ← شرائح الأسعار
-                      </Link>
-                    </p>
-                  )}
                 </div>
                 {selectedCustomer && (
                   <div className="mt-1.5 flex items-center justify-between px-1 text-xs text-gray-500">
