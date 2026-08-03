@@ -51,24 +51,44 @@ export async function POST(request: NextRequest) {
   }
 
   const chatId = String(message.chat.id);
-  const cfg = await loadTelegramConfig();
+  let cfg;
+  try {
+    cfg = await loadTelegramConfig();
+  } catch (e) {
+    console.error("telegram webhook config", e);
+    return NextResponse.json({
+      ok: true,
+      skipped: "config_error",
+      error: e instanceof Error ? e.message : "config_error",
+    });
+  }
   if (!cfg) {
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, skipped: "telegram_not_configured" });
   }
 
   if (chatId !== String(cfg.chat_id).trim()) {
     // Ignore foreign chats silently
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({
+      ok: true,
+      skipped: "chat_not_allowed",
+      chat_id: chatId,
+    });
   }
 
   // Respond quickly to Telegram; process AI in the same request (Vercel serverless)
   try {
     await sendChatAction(chatId, "typing");
     const reply = await handleJarvisMessage(chatId, message.text);
-    await sendTelegramChatMessage({
+    const sent = await sendTelegramChatMessage({
       chatId,
       text: reply.text,
       replyToMessageId: message.message_id,
+    });
+    return NextResponse.json({
+      ok: true,
+      replied: true,
+      send_ok: sent.ok,
+      used_tools: reply.usedTools,
     });
   } catch (e) {
     console.error("telegram webhook jarvis", e);
@@ -84,14 +104,42 @@ export async function POST(request: NextRequest) {
     } catch {
       // ignore
     }
+    return NextResponse.json({
+      ok: true,
+      replied: false,
+      error: e instanceof Error ? e.message : "handler_error",
+    });
   }
-
-  return NextResponse.json({ ok: true });
 }
 
 export async function GET() {
+  let telegramConfigured = false;
+  let geminiConfigured = false;
+  let chatIdSet = false;
+  let configError: string | null = null;
+  try {
+    const cfg = await loadTelegramConfig();
+    telegramConfigured = Boolean(cfg);
+    chatIdSet = Boolean(cfg?.chat_id);
+  } catch (e) {
+    configError = e instanceof Error ? e.message : "config error";
+  }
+  try {
+    const { isGeminiConfigured } = await import("@/lib/ai");
+    geminiConfigured = await isGeminiConfigured();
+  } catch (e) {
+    configError =
+      (configError ? configError + " | " : "") +
+      (e instanceof Error ? e.message : "gemini error");
+  }
+
   return NextResponse.json({
     ok: true,
     service: "telegram-jarvis-webhook",
+    host: "store-system-rho",
+    telegram_configured: telegramConfigured,
+    chat_id_set: chatIdSet,
+    gemini_configured: geminiConfigured,
+    config_error: configError,
   });
 }
