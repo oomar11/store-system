@@ -69,48 +69,55 @@ export default function InventoryCountDetailPage() {
 
   async function fetchDetail() {
     setLoading(true);
-    const [countRes, itemsRes, settingsRes, catalogRes] = await Promise.all([
-      supabase.from("inventory_counts").select("*").eq("id", countId).single(),
-      supabase
-        .from("inventory_count_items")
-        .select("*, product:products(*, category:categories(*))")
-        .eq("count_id", countId)
-        .order("id"),
-      supabase.from("settings").select("*").limit(1).maybeSingle(),
-      supabase
-        .from("products")
-        .select("*, category:categories(*)")
-        .eq("is_active", true)
-        .order("name"),
-    ]);
+    try {
+      const [countRes, itemsRes, settingsRes, catalogRes] = await Promise.all([
+        supabase.from("inventory_counts").select("*").eq("id", countId).single(),
+        supabase
+          .from("inventory_count_items")
+          .select("*, product:products(*, category:categories(*))")
+          .eq("count_id", countId)
+          .order("id"),
+        supabase.from("settings").select("*").limit(1).maybeSingle(),
+        supabase
+          .from("products")
+          .select("*, category:categories(*)")
+          .eq("is_active", true)
+          .order("name"),
+      ]);
 
-    if (countRes.error || !countRes.data) {
-      toastError("جلسة الجرد غير موجودة");
+      if (countRes.error || !countRes.data) {
+        toastError("جلسة الجرد غير موجودة");
+        router.push("/inventory");
+        return;
+      }
+
+      setCount(countRes.data);
+      setNotesDraft(countRes.data.notes || "");
+      const loadedItems = (itemsRes.data || []) as CountItemRow[];
+      setItems(loadedItems);
+      if (catalogRes.data) setCatalog(catalogRes.data);
+      const drafts: Record<string, string> = {};
+      for (const item of loadedItems) {
+        drafts[item.id] =
+          item.counted_quantity == null ? "" : String(item.counted_quantity);
+      }
+      setDraftValues(drafts);
+
+      if (settingsRes.data) {
+        setSettings(settingsRes.data);
+        setSheetConfig(
+          normalizeInventorySheetConfig(settingsRes.data.inventory_sheet_config)
+        );
+      } else {
+        setSheetConfig(normalizeInventorySheetConfig(null));
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "خطأ غير معروف";
+      toastError("تعذر تحميل الجرد: " + message);
       router.push("/inventory");
-      return;
+    } finally {
+      setLoading(false);
     }
-
-    setCount(countRes.data);
-    setNotesDraft(countRes.data.notes || "");
-    const loadedItems = (itemsRes.data || []) as CountItemRow[];
-    setItems(loadedItems);
-    if (catalogRes.data) setCatalog(catalogRes.data);
-    const drafts: Record<string, string> = {};
-    for (const item of loadedItems) {
-      drafts[item.id] =
-        item.counted_quantity == null ? "" : String(item.counted_quantity);
-    }
-    setDraftValues(drafts);
-
-    if (settingsRes.data) {
-      setSettings(settingsRes.data);
-      setSheetConfig(
-        normalizeInventorySheetConfig(settingsRes.data.inventory_sheet_config)
-      );
-    } else {
-      setSheetConfig(normalizeInventorySheetConfig(null));
-    }
-    setLoading(false);
   }
 
   const isReadonly =

@@ -14,6 +14,7 @@ import { allocateDocumentNumber } from "@/lib/document-numbers";
 import {
   INVENTORY_SETUP_SQL,
   INVENTORY_SETUP_SQL_URL,
+  isDocumentNumberRpcMissing,
   isInventoryTablesMissing,
 } from "@/lib/inventory-setup";
 import { normalizeInventorySheetConfig } from "@/lib/inventory-sheet";
@@ -113,33 +114,46 @@ export default function InventoryPage() {
       return;
     }
     setCreating(true);
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+      const countNumber = await allocateDocumentNumber(
+        supabase,
+        "inventory_count"
+      );
+      const { data: count, error: countError } = await supabase
+        .from("inventory_counts")
+        .insert({
+          count_number: countNumber,
+          status: "in_progress",
+          notes: null,
+          created_by: user?.id || null,
+        })
+        .select("*")
+        .single();
 
-    const countNumber = await allocateDocumentNumber(
-      supabase,
-      "inventory_count"
-    );
-    const { data: count, error: countError } = await supabase
-      .from("inventory_counts")
-      .insert({
-        count_number: countNumber,
-        status: "in_progress",
-        notes: null,
-        created_by: user?.id || null,
-      })
-      .select("*")
-      .single();
+      if (countError || !count) {
+        toastError("تعذر إنشاء الجرد: " + (countError?.message || ""));
+        return;
+      }
 
-    if (countError || !count) {
-      toastError("تعذر إنشاء الجرد: " + (countError?.message || ""));
+      router.push(`/inventory/${count.id}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "خطأ غير معروف";
+      if (isDocumentNumberRpcMissing(message)) {
+        setSetupNeeded(true);
+        setSetupError(message);
+        toastError(
+          "تعذر إنشاء الجرد: جدول الترقيم أو دالة next_document_number غير موجودة — طبّق migrations (document_sequences) في Supabase"
+        );
+      } else {
+        toastError("تعذر إنشاء الجرد: " + message);
+      }
+    } finally {
       setCreating(false);
-      return;
     }
-
-    router.push(`/inventory/${count.id}`);
   }
 
   async function deleteCount(c: InventoryCount) {
