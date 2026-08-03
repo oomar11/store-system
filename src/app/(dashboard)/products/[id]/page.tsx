@@ -157,11 +157,32 @@ export default function ProductDetailPage() {
             الأصناف
           </button>
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#eaf4ff] text-[#1473e6]">
+            <div
+              className={`flex h-11 w-11 items-center justify-center rounded-xl ${
+                product.is_active === false
+                  ? "bg-slate-200 text-slate-500"
+                  : "bg-[#eaf4ff] text-[#1473e6]"
+              }`}
+            >
               <Package className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-[#172033]">{product.name}</h1>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1
+                  className={`text-2xl font-bold ${
+                    product.is_active === false
+                      ? "text-slate-500 line-through decoration-slate-400"
+                      : "text-[#172033]"
+                  }`}
+                >
+                  {product.name}
+                </h1>
+                {product.is_active === false && (
+                  <span className="rounded-md border border-slate-300 bg-slate-200 px-2.5 py-0.5 text-xs font-bold text-slate-700">
+                    موقوف — غير متاح للبيع
+                  </span>
+                )}
+              </div>
               <p className="text-sm text-[#687386]">
                 كود: <span className="font-mono font-semibold">{product.sku}</span>
                 {product.category?.name ? ` · ${product.category.name}` : ""}
