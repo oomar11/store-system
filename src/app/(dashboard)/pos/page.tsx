@@ -2642,7 +2642,7 @@ export default function POSPage({
                   if (isPurchaseSide) return;
                   setShowTierMenu((v) => !v);
                 }}
-                className={`relative inline-flex min-h-9 min-w-9 items-center justify-center rounded-lg border transition-colors max-lg:min-h-11 max-lg:min-w-11 ${
+                className={`relative inline-flex min-h-9 items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-colors max-lg:min-h-11 max-lg:px-3 ${
                   isPurchaseSide
                     ? "cursor-not-allowed border-gray-100 text-gray-300"
                     : selectedTierId
@@ -2650,7 +2650,8 @@ export default function POSPage({
                       : "border-gray-200 text-gray-600 hover:bg-gray-50"
                 }`}
               >
-                <Tags className="h-4 w-4" />
+                <Tags className="h-4 w-4 shrink-0" />
+                <span>شريحة</span>
                 {selectedTierId && !isPurchaseSide ? (
                   <span className="absolute -left-0.5 -top-0.5 h-2 w-2 rounded-full bg-blue-600" />
                 ) : null}
