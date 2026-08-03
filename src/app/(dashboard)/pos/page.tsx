@@ -811,7 +811,11 @@ export default function POSPage({
 
   function selectCustomer(customer: Customer | null) {
     setSelectedCustomer(customer);
+    // Tier is invoice-level: only auto-fill when the customer has an assigned tier.
+    // Clearing the customer (or picking a retail customer) keeps the current invoice tier.
+    if (!customer) return;
     const tierId = tierIdFromCustomer(customer);
+    if (!tierId) return;
     setSelectedTierId(tierId);
     applyTierToCart(tierId);
   }
@@ -3101,38 +3105,52 @@ export default function POSPage({
                     <Plus className="h-4 w-4" />
                   </button>
                 </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <label
-                    htmlFor="pos-price-tier"
-                    className="shrink-0 text-xs font-medium text-gray-500"
-                  >
-                    شريحة السعر:
-                  </label>
+                <div className="mt-2 rounded-xl border border-blue-200 bg-blue-50/70 p-2.5">
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <p className="text-xs font-bold text-blue-900">
+                      شريحة الخصم على الفاتورة
+                    </p>
+                    <span className="text-[10px] font-medium text-blue-700/80">
+                      مش محتاج عميل
+                    </span>
+                  </div>
                   {priceTiers.some((t) => !t.is_default) ? (
                     <>
-                      <select
-                        id="pos-price-tier"
-                        value={selectedTierId || ""}
-                        onChange={(e) =>
-                          selectPriceTier(e.target.value || null)
-                        }
-                        className="min-w-[9rem] flex-1 rounded-lg border border-blue-200 bg-blue-50/60 px-2.5 py-1.5 text-sm font-semibold text-blue-900 focus:border-blue-500 focus:outline-none max-lg:min-h-11"
-                      >
-                        <option value="">تجزئة (افتراضي)</option>
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => selectPriceTier(null)}
+                          className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors max-lg:min-h-10 ${
+                            !selectedTierId
+                              ? "bg-blue-600 text-white"
+                              : "border border-blue-200 bg-white text-blue-800 hover:bg-blue-100"
+                          }`}
+                        >
+                          تجزئة
+                        </button>
                         {priceTiers
                           .filter((t) => !t.is_default)
                           .map((t) => (
-                            <option key={t.id} value={t.id}>
+                            <button
+                              key={t.id}
+                              type="button"
+                              onClick={() => selectPriceTier(t.id)}
+                              className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors max-lg:min-h-10 ${
+                                selectedTierId === t.id
+                                  ? "bg-blue-600 text-white"
+                                  : "border border-blue-200 bg-white text-blue-800 hover:bg-blue-100"
+                              }`}
+                            >
                               {t.name}
-                            </option>
+                            </button>
                           ))}
-                      </select>
-                      <span className="basis-full text-[11px] text-gray-400">
-                        اختَر الشريحة لتحديث أسعار الأصناف في الفاتورة فوراً
-                      </span>
+                      </div>
+                      <p className="mt-1.5 text-[11px] text-blue-800/70">
+                        اختَر الشريحة لتحديث أسعار الأصناف فوراً — حتى بدون عميل
+                      </p>
                     </>
                   ) : (
-                    <p className="flex-1 text-xs text-amber-700">
+                    <p className="text-xs text-amber-800">
                       لا توجد شرائح بعد — أنشئ شريحة من{" "}
                       <Link
                         href="/settings?tab=tiers"
