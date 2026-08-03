@@ -22,8 +22,8 @@ import { InventorySheetPreview } from "@/components/print/InventorySheetPreview"
 import { TableRowActions, type RowAction } from "@/components/ui/TableRowActions";
 import { useRowContextMenu, toContextMenuItems } from "@/components/ui/ContextMenu";
 import {
-  getSnapshot,
   isBrowserOnline,
+  TimeoutError,
   withTimeout,
 } from "@/lib/offline";
 import type {
@@ -115,38 +115,48 @@ export default function InventoryPage() {
     }
     setCreating(true);
     try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+      const count = await withTimeout(
+        (async () => {
+          const {
+            data: { user },
+          } = await supabase.auth.getUser();
 
-      const countNumber = await allocateDocumentNumber(
-        supabase,
-        "inventory_count"
+          const countNumber = await allocateDocumentNumber(
+            supabase,
+            "inventory_count"
+          );
+          const { data, error: countError } = await supabase
+            .from("inventory_counts")
+            .insert({
+              count_number: countNumber,
+              status: "in_progress",
+              notes: null,
+              created_by: user?.id || null,
+            })
+            .select("*")
+            .single();
+
+          if (countError || !data) {
+            throw new Error(countError?.message || "تعذر إنشاء الجرد");
+          }
+          return data;
+        })(),
+        12000
       );
-      const { data: count, error: countError } = await supabase
-        .from("inventory_counts")
-        .insert({
-          count_number: countNumber,
-          status: "in_progress",
-          notes: null,
-          created_by: user?.id || null,
-        })
-        .select("*")
-        .single();
-
-      if (countError || !count) {
-        toastError("تعذر إنشاء الجرد: " + (countError?.message || ""));
-        return;
-      }
 
       router.push(`/inventory/${count.id}`);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "خطأ غير معروف";
-      if (isDocumentNumberRpcMissing(message)) {
+      const message =
+        err instanceof TimeoutError
+          ? "انتهت مهلة الاتصال — حاول مرة أخرى"
+          : err instanceof Error
+            ? err.message
+            : "خطأ غير معروف";
+      if (isDocumentNumberRpcMissing(message) || isInventoryTablesMissing(message)) {
         setSetupNeeded(true);
         setSetupError(message);
         toastError(
-          "تعذر إنشاء الجرد: جدول الترقيم أو دالة next_document_number غير موجودة — طبّق migrations (document_sequences) في Supabase"
+          "تعذر إنشاء الجرد: يلزم تشغيل SQL التفعيل مرة واحدة في Supabase (الجداول + ترقيم الجلسات)"
         );
       } else {
         toastError("تعذر إنشاء الجرد: " + message);
@@ -347,9 +357,10 @@ export default function InventoryPage() {
 
       {setupNeeded && (
         <div className="mb-6 rounded-xl border border-amber-300 bg-amber-50 p-5">
-          <h2 className="text-sm font-bold text-amber-900">تفعيل جداول الجرد مطلوب</h2>
+          <h2 className="text-sm font-bold text-amber-900">تفعيل نظام الجرد مطلوب</h2>
           <p className="mt-1 text-sm text-amber-800">
-            شغّل الـ SQL التالي مرة واحدة في Supabase ثم حدّث الصفحة.
+            شغّل الـ SQL التالي مرة واحدة في Supabase (الجداول + ترقيم الجلسات) ثم حدّث
+            الصفحة — بدون كده زر «جرد جديد» مش هيفتح.
           </p>
           {setupError && (
             <p className="mt-1 text-xs text-amber-700/80">{setupError}</p>
