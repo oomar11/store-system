@@ -57,6 +57,8 @@ BEGIN
 END $$;
 
 -- ترقيم جلسات الجرد (مطلوب لزر «جرد جديد»)
+DROP FUNCTION IF EXISTS public.next_document_number(text);
+DROP FUNCTION IF EXISTS public.next_document_number(text, timestamptz);
 CREATE TABLE IF NOT EXISTS public.document_sequences (
   kind TEXT NOT NULL,
   period TEXT NOT NULL,
@@ -68,7 +70,10 @@ CREATE TABLE IF NOT EXISTS public.document_sequences (
 
 ALTER TABLE public.document_sequences ENABLE ROW LEVEL SECURITY;
 
-CREATE OR REPLACE FUNCTION public.next_document_number(p_kind text)
+CREATE OR REPLACE FUNCTION public.next_document_number(
+  p_kind text,
+  p_at timestamptz
+)
 RETURNS text
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -80,6 +85,7 @@ DECLARE
   v_period text;
   v_next bigint;
   v_pad int;
+  v_at timestamptz := COALESCE(p_at, NOW());
   v_ok boolean := auth.uid() IS NOT NULL;
 BEGIN
   IF to_regprocedure('public.is_active_user()') IS NOT NULL THEN
@@ -106,7 +112,7 @@ BEGIN
     RAISE EXCEPTION 'نوع المستند غير صالح: %', p_kind;
   END IF;
 
-  v_period := to_char((now() AT TIME ZONE 'Africa/Cairo'), 'YYMM');
+  v_period := to_char((v_at AT TIME ZONE 'Africa/Cairo'), 'YYMM');
 
   INSERT INTO public.document_sequences AS ds (kind, period, last_value)
   VALUES (v_kind, v_period, 1)
@@ -119,8 +125,19 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION public.next_document_number(p_kind text)
+RETURNS text
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT public.next_document_number(p_kind, NULL::timestamptz);
+$$;
+
 REVOKE ALL ON FUNCTION public.next_document_number(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.next_document_number(text, timestamptz) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.next_document_number(text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.next_document_number(text, timestamptz) TO authenticated;
 `;
 
 export const INVENTORY_SETUP_SQL_URL =
