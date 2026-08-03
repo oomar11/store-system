@@ -13,12 +13,10 @@ import {
   smartSearchMatch,
 } from "@/lib/utils";
 import { InventorySheetPreview } from "@/components/print/InventorySheetPreview";
-import { PrintReportPreview } from "@/components/print/PrintReportPreview";
 import {
-  inventoryCountResultColumns,
-  type InventoryCountPrintRow,
-  type ReportColumn,
-} from "@/components/print/report-columns";
+  InventoryCountResultPreview,
+  type InventoryCountFinanceRow,
+} from "@/components/print/InventoryCountResultPreview";
 import { InventoryCountExcelToolbar } from "@/components/excel/InventoryCountExcelToolbar";
 import { useToast } from "@/components/ui/Toast";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
@@ -595,8 +593,9 @@ export default function InventoryCountDetailPage() {
       });
   }, [items]);
 
-  const resultPrintRows: InventoryCountPrintRow[] = useMemo(() => {
+  const resultPrintRows: InventoryCountFinanceRow[] = useMemo(() => {
     return [...items]
+      .filter((item) => item.counted_quantity != null)
       .sort((a, b) => {
         const catA = a.product?.category?.name || "بدون تصنيف";
         const catB = b.product?.category?.name || "بدون تصنيف";
@@ -605,8 +604,10 @@ export default function InventoryCountDetailPage() {
       })
       .map((item) => {
         const systemQty = Number(item.system_quantity) || 0;
-        const counted =
-          item.counted_quantity == null ? null : Number(item.counted_quantity);
+        const counted = Number(item.counted_quantity) || 0;
+        const variance = counted - systemQty;
+        const buyPrice = Number(item.product?.buy_price) || 0;
+        const sellPrice = Number(item.product?.sell_price) || 0;
         return {
           id: item.id,
           name: item.product?.name || "—",
@@ -615,7 +616,11 @@ export default function InventoryCountDetailPage() {
           category: item.product?.category?.name || "بدون تصنيف",
           system_quantity: systemQty,
           counted_quantity: counted,
-          variance: counted == null ? null : counted - systemQty,
+          variance,
+          buy_price: buyPrice,
+          sell_price: sellPrice,
+          buy_variance_value: variance * buyPrice,
+          sell_variance_value: variance * sellPrice,
           notes: item.notes || "",
         };
       });
@@ -1017,31 +1022,10 @@ export default function InventoryCountDetailPage() {
       )}
 
       {showResultPrint && (
-        <PrintReportPreview
-          title={`نتيجة الجرد ${count.count_number}`}
-          subtitle={[
-            INVENTORY_COUNT_STATUS_LABELS[count.status] || count.status,
-            formatDateShort(count.created_at),
-            count.completed_at
-              ? `اعتماد: ${formatDateShort(count.completed_at)}`
-              : null,
-            count.notes?.trim() || null,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
+        <InventoryCountResultPreview
+          count={count}
           rows={resultPrintRows}
-          columns={
-            inventoryCountResultColumns as ReportColumn<
-              Record<string, unknown>
-            >[]
-          }
           settings={settings}
-          summary={[
-            { label: "الإجمالي", value: String(stats.total) },
-            { label: "تم العد", value: String(stats.counted) },
-            { label: "متبقي", value: String(stats.pending) },
-            { label: "فروقات", value: String(stats.variances) },
-          ]}
           onClose={() => setShowResultPrint(false)}
         />
       )}
