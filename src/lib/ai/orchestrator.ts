@@ -27,6 +27,41 @@ function extractText(parts: Part[] | undefined): string {
     .trim();
 }
 
+function extractFunctionCalls(parts: Part[] | undefined) {
+  if (!parts?.length) return [];
+  return parts
+    .filter((p): p is Part & { functionCall: { name: string; args?: object } } =>
+      Boolean(p && typeof p === "object" && "functionCall" in p && p.functionCall)
+    )
+    .map((p) => p.functionCall);
+}
+
+function sanitizeModelParts(parts: Part[] | undefined): Part[] {
+  if (!parts?.length) return [{ text: "" }];
+  const cleaned: Part[] = [];
+  for (const p of parts) {
+    if ("text" in p && p.text != null) {
+      cleaned.push({ text: p.text });
+    } else if ("functionCall" in p && p.functionCall) {
+      cleaned.push({ functionCall: p.functionCall });
+    }
+  }
+  return cleaned.length ? cleaned : [{ text: "" }];
+}
+
+/** Keep only plain user/model text turns for short chat memory. */
+function textOnlyHistory(contents: Content[]): Content[] {
+  return contents.filter((c) => {
+    if (c.role !== "user" && c.role !== "model") return false;
+    const parts = c.parts || [];
+    if (!parts.length) return false;
+    if (parts.some((p) => "functionCall" in p || "functionResponse" in p)) {
+      return false;
+    }
+    return parts.some((p) => "text" in p && Boolean(p.text));
+  });
+}
+
 function extractGeminiKeyCommand(text: string): string | null {
   const trimmed = text.trim();
   const cmd = trimmed.match(
@@ -97,35 +132,38 @@ export async function handleJarvisMessage(
   }
 
   const model = await createGeminiModel();
-  const history = getChatHistory(chatId);
-  const chat = model.startChat({ history });
+  const contents: Content[] = [
+    ...textOnlyHistory(getChatHistory(chatId)),
+    { role: "user", parts: [{ text }] },
+  ];
   const usedTools: string[] = [];
 
-  let result = await chat.sendMessage(text);
-
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const result = await model.generateContent({ contents });
     const response = result.response;
-    const functionCalls = response.functionCalls?.() ?? [];
+    const parts = response.candidates?.[0]?.content?.parts;
+    const functionCalls = extractFunctionCalls(parts);
+
+    // Always append model turn (needed before function responses)
+    contents.push({
+      role: "model",
+      parts: sanitizeModelParts(parts),
+    });
+
     if (!functionCalls.length) {
       const reply =
-        extractText(response.candidates?.[0]?.content?.parts) ||
+        extractText(parts) ||
         response.text?.() ||
         "ما قدرتش أجاوب دلوقتي — جرّب تعيد صياغة السؤال.";
 
-      try {
-        const newHistory = await chat.getHistory();
-        setChatHistory(chatId, newHistory as Content[]);
-      } catch {
-        // ignore history persistence failures
-      }
-
+      setChatHistory(chatId, textOnlyHistory(contents));
       return { text: reply.trim(), usedTools };
     }
 
     const functionResponses: Part[] = [];
     for (const call of functionCalls) {
       usedTools.push(call.name);
-      const toolResult = await executeBusinessTool(call.name, call.args);
+      const toolResult = await executeBusinessTool(call.name, call.args ?? {});
       functionResponses.push({
         functionResponse: {
           name: call.name,
@@ -134,16 +172,13 @@ export async function handleJarvisMessage(
       });
     }
 
-    result = await chat.sendMessage(functionResponses);
+    // Newer Gemini models reject role "function"; send responses as user parts.
+    contents.push({ role: "user", parts: functionResponses });
   }
 
-  const fallback =
-    "وصلت لحد أقصى من خطوات التحليل. جرّب سؤال أضيق شوية.";
-  try {
-    const newHistory = await chat.getHistory();
-    setChatHistory(chatId, newHistory as Content[]);
-  } catch {
-    // ignore
-  }
-  return { text: fallback, usedTools };
+  setChatHistory(chatId, textOnlyHistory(contents));
+  return {
+    text: "وصلت لحد أقصى من خطوات التحليل. جرّب سؤال أضيق شوية.",
+    usedTools,
+  };
 }
