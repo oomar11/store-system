@@ -57,9 +57,9 @@ async function resolveProfileJpeg(
     urlCandidates.push(`${site.replace(/\/$/, "")}/icons/icon-512.png`);
   }
 
-  urlCandidates.push("https://store-system-iota.vercel.app/icon.png");
+  urlCandidates.push("https://store-system-rho.vercel.app/icon.png");
   urlCandidates.push(
-    "https://store-system-iota.vercel.app/icons/icon-512.png"
+    "https://store-system-rho.vercel.app/icons/icon-512.png"
   );
 
   let source: Buffer | null = null;

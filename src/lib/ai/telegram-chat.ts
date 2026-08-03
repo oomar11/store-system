@@ -90,7 +90,7 @@ export function getAppBaseUrl(): string {
       ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
       : "") ||
     (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "") ||
-    "https://store-system-iota.vercel.app";
+    "https://store-system-rho.vercel.app";
   return site.replace(/\/$/, "");
 }
 
