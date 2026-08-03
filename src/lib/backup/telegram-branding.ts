@@ -25,7 +25,7 @@ async function tgApi(
 }
 
 async function loadStoreBranding() {
-  const client = createServiceClient();
+  const client = await createServiceClient();
   const { data } = await client
     .from("settings")
     .select("store_name, logo_url")

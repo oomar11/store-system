@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
     }
 
     const payload = parseBackupJson(raw);
-    const client = createServiceClient();
+    const client = await createServiceClient();
     await restoreBackup(client, payload);
 
     await logBackupRun({

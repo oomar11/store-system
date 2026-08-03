@@ -16,7 +16,7 @@ function maskToken(token: string | null | undefined): string {
 
 export async function loadTelegramConfig(): Promise<TelegramConfig | null> {
   try {
-    const client = createServiceClient();
+    const client = await createServiceClient();
     const { data } = await client
       .from("telegram_config")
       .select("bot_token, chat_id")
@@ -43,7 +43,7 @@ export async function loadTelegramConfig(): Promise<TelegramConfig | null> {
 
 export async function getTelegramConfigPublic() {
   try {
-    const client = createServiceClient();
+    const client = await createServiceClient();
     const { data } = await client
       .from("telegram_config")
       .select("bot_token, chat_id, updated_at")
@@ -104,7 +104,7 @@ export async function saveTelegramConfig(opts: {
   updated_by?: string | null;
   clear_token?: boolean;
 }) {
-  const client = createServiceClient();
+  const client = await createServiceClient();
   const { data: existing } = await client
     .from("telegram_config")
     .select("bot_token, chat_id")

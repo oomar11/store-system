@@ -34,7 +34,7 @@ function resolvePermissionsPayload(
 }
 
 async function profilesClient(): Promise<SupabaseClient> {
-  return tryCreateServiceClient() ?? (await createServerSupabaseClient());
+  return await tryCreateServiceClient() ?? (await createServerSupabaseClient());
 }
 
 export async function PATCH(request: NextRequest, { params }: Params) {
@@ -53,7 +53,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 
   try {
     const body = await request.json();
-    const service = tryCreateServiceClient();
+    const service = await tryCreateServiceClient();
     const client = service ?? (await createServerSupabaseClient());
 
     const { data: target, error: targetError } = await client
@@ -255,7 +255,7 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
   }
 
   try {
-    const service = tryCreateServiceClient();
+    const service = await tryCreateServiceClient();
     const client = service ?? (await createServerSupabaseClient());
 
     const { data: target, error: targetError } = await client

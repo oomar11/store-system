@@ -47,7 +47,7 @@ export async function GET() {
     // Listing profiles works with the signed-in user session (RLS allows active users).
     // Prefer service role when configured.
     const client =
-      tryCreateServiceClient() ?? (await createServerSupabaseClient());
+      await tryCreateServiceClient() ?? (await createServerSupabaseClient());
     const { data, error } = await client
       .from("profiles")
       .select("id, email, full_name, role, is_active, permissions, created_at")
@@ -103,7 +103,7 @@ export async function POST(request: NextRequest) {
     }
 
     const email = `${username}@store.local`;
-    const service = tryCreateServiceClient();
+    const service = await tryCreateServiceClient();
 
     if (!service) {
       const viaFn = await callAdminUsersFunction<{

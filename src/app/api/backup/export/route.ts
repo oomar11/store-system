@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
     request.nextUrl.searchParams.get("send") === "telegram";
 
   try {
-    const client = createServiceClient();
+    const client = await createServiceClient();
     const payload = await exportBackup(client);
     const json = backupToJson(payload);
     const filename = backupFilename(payload);

@@ -98,7 +98,7 @@ export async function logBackupRun(opts: {
 }) {
   try {
     const { createServiceClient } = await import("@/lib/supabase-service");
-    const client = createServiceClient();
+    const client = await createServiceClient();
     await client.from("backup_runs").insert({
       source: opts.source,
       status: opts.status,
