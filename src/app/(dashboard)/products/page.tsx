@@ -662,7 +662,11 @@ export default function ProductsPage() {
                 return (
                 <tr
                   key={product.id}
-                  className={`hover:bg-gray-50 ${active ? "" : "bg-gray-50/80 opacity-75"}`}
+                  className={
+                    active
+                      ? "hover:bg-gray-50"
+                      : "bg-slate-100/90 text-slate-500 opacity-60 hover:bg-slate-100"
+                  }
                   onContextMenu={(e) =>
                     openMenu(e, toContextMenuItems(productRowActions(product)))
                   }
@@ -685,38 +689,47 @@ export default function ProductsPage() {
                     <div className="flex flex-wrap items-center gap-2">
                       <Link
                         href={`/products/${product.id}`}
-                        className="font-medium text-[#1473e6] hover:underline"
+                        className={
+                          active
+                            ? "font-medium text-[#1473e6] hover:underline"
+                            : "font-medium text-slate-500 line-through decoration-slate-400 hover:underline"
+                        }
                       >
                         {product.name}
                       </Link>
                       {!active && (
-                        <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[10px] font-bold text-gray-600">
+                        <span className="rounded-md border border-slate-300 bg-slate-200/90 px-2 py-0.5 text-[10px] font-bold tracking-wide text-slate-700">
                           موقوف
                         </span>
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-600" dir="ltr">
+                  <td
+                    className={`px-4 py-3 font-mono text-xs ${active ? "text-gray-600" : "text-slate-400"}`}
+                    dir="ltr"
+                  >
                     {product.sku}
                   </td>
-                  <td className="px-4 py-3 text-gray-600">
+                  <td className={`px-4 py-3 ${active ? "text-gray-600" : "text-slate-400"}`}>
                     {product.category?.name || "-"}
                   </td>
-                  <td className="px-4 py-3 text-gray-600">
+                  <td className={`px-4 py-3 ${active ? "text-gray-600" : "text-slate-400"}`}>
                     {formatCurrency(product.buy_price)}
                   </td>
-                  <td className="px-4 py-3 font-medium text-gray-900">
+                  <td
+                    className={`px-4 py-3 font-medium ${active ? "text-gray-900" : "text-slate-500"}`}
+                  >
                     {formatCurrency(product.sell_price)}
                   </td>
                   <td className="px-4 py-3">
                     <span
-                      className={stockQtyBadgeClass(
+                      className={`${stockQtyBadgeClass(
                         product.quantity <= 0
                           ? "out"
                           : isLowStock(product.quantity, product.min_quantity)
                             ? "low"
                             : "ok"
-                      )}
+                      )}${active ? "" : " opacity-70 grayscale"}`}
                     >
                       {product.quantity} {product.unit}
                     </span>
