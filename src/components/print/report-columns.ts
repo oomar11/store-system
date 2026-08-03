@@ -747,6 +747,72 @@ export const productMovementColumns: ReportColumn[] = [
   },
 ];
 
+/** صفوف نتيجة جلسة جرد مكتملة للطباعة */
+export type InventoryCountPrintRow = {
+  id: string;
+  name: string;
+  sku: string;
+  unit: string;
+  category: string;
+  system_quantity: number;
+  counted_quantity: number | null;
+  variance: number | null;
+  notes: string;
+};
+
+export const inventoryCountResultColumns: ReportColumn<InventoryCountPrintRow>[] = [
+  {
+    key: "name",
+    label: "الصنف",
+    getValue: (r) => r.name || "—",
+  },
+  {
+    key: "sku",
+    label: "الكود",
+    getValue: (r) => r.sku || "—",
+  },
+  {
+    key: "category",
+    label: "التصنيف",
+    getValue: (r) => r.category || "—",
+  },
+  {
+    key: "unit",
+    label: "الوحدة",
+    getValue: (r) => r.unit || "—",
+    align: "center",
+  },
+  {
+    key: "system_quantity",
+    label: "كمية النظام",
+    getValue: (r) => Number(r.system_quantity) || 0,
+    align: "center",
+  },
+  {
+    key: "counted_quantity",
+    label: "الكمية الفعلية",
+    getValue: (r) =>
+      r.counted_quantity == null ? "—" : Number(r.counted_quantity),
+    align: "center",
+  },
+  {
+    key: "variance",
+    label: "الفرق",
+    getValue: (r) => {
+      if (r.variance == null) return "—";
+      const v = Number(r.variance);
+      if (v > 0) return `+${v}`;
+      return String(v);
+    },
+    align: "center",
+  },
+  {
+    key: "notes",
+    label: "ملاحظات",
+    getValue: (r) => r.notes || "—",
+  },
+];
+
 export function resolveStoreName(settings: { store_name?: string } | null): string {
   const name = settings?.store_name?.trim();
   return name || "ويندور";

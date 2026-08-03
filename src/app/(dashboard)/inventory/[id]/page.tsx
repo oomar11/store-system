@@ -13,6 +13,12 @@ import {
   smartSearchMatch,
 } from "@/lib/utils";
 import { InventorySheetPreview } from "@/components/print/InventorySheetPreview";
+import { PrintReportPreview } from "@/components/print/PrintReportPreview";
+import {
+  inventoryCountResultColumns,
+  type InventoryCountPrintRow,
+  type ReportColumn,
+} from "@/components/print/report-columns";
 import { InventoryCountExcelToolbar } from "@/components/excel/InventoryCountExcelToolbar";
 import { useToast } from "@/components/ui/Toast";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
@@ -48,6 +54,7 @@ export default function InventoryCountDetailPage() {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
   const [showPrint, setShowPrint] = useState(false);
+  const [showResultPrint, setShowResultPrint] = useState(false);
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
   const [addSearch, setAddSearch] = useState("");
   const [addQty, setAddQty] = useState("");
@@ -588,6 +595,36 @@ export default function InventoryCountDetailPage() {
       });
   }, [items]);
 
+  const resultPrintRows: InventoryCountPrintRow[] = useMemo(() => {
+    return [...items]
+      .sort((a, b) => {
+        const catA = a.product?.category?.name || "بدون تصنيف";
+        const catB = b.product?.category?.name || "بدون تصنيف";
+        if (catA !== catB) return catA.localeCompare(catB, "ar");
+        return (a.product?.name || "").localeCompare(b.product?.name || "", "ar");
+      })
+      .map((item) => {
+        const systemQty = Number(item.system_quantity) || 0;
+        const counted =
+          item.counted_quantity == null ? null : Number(item.counted_quantity);
+        return {
+          id: item.id,
+          name: item.product?.name || "—",
+          sku: item.product?.sku || "",
+          unit: item.product?.unit || "قطعة",
+          category: item.product?.category?.name || "بدون تصنيف",
+          system_quantity: systemQty,
+          counted_quantity: counted,
+          variance: counted == null ? null : counted - systemQty,
+          notes: item.notes || "",
+        };
+      });
+  }, [items]);
+
+  const canPrintResult =
+    count?.status === "completed" ||
+    items.some((i) => i.counted_quantity != null);
+
   if (loading || !count) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -663,13 +700,25 @@ export default function InventoryCountDetailPage() {
           >
             شكل الورقة
           </Link>
+          {canPrintResult && (
+            <button
+              type="button"
+              onClick={() => setShowResultPrint(true)}
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-3 py-2 text-sm font-medium text-white hover:bg-blue-800"
+            >
+              <Printer className="h-4 w-4" />
+              {count.status === "completed"
+                ? "طباعة نتيجة الجرد"
+                : "طباعة نتيجة العد"}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setShowPrint(true)}
             className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
           >
             <Printer className="h-4 w-4" />
-            طباعة ورقة الجرد
+            طباعة ورقة عد فارغة
           </button>
           {isReadonly && (
             <button
@@ -964,6 +1013,36 @@ export default function InventoryCountDetailPage() {
           settings={settings}
           subtitle={`${count.count_number} · ${formatDateShort(count.created_at)}`}
           onClose={() => setShowPrint(false)}
+        />
+      )}
+
+      {showResultPrint && (
+        <PrintReportPreview
+          title={`نتيجة الجرد ${count.count_number}`}
+          subtitle={[
+            INVENTORY_COUNT_STATUS_LABELS[count.status] || count.status,
+            formatDateShort(count.created_at),
+            count.completed_at
+              ? `اعتماد: ${formatDateShort(count.completed_at)}`
+              : null,
+            count.notes?.trim() || null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+          rows={resultPrintRows}
+          columns={
+            inventoryCountResultColumns as ReportColumn<
+              Record<string, unknown>
+            >[]
+          }
+          settings={settings}
+          summary={[
+            { label: "الإجمالي", value: String(stats.total) },
+            { label: "تم العد", value: String(stats.counted) },
+            { label: "متبقي", value: String(stats.pending) },
+            { label: "فروقات", value: String(stats.variances) },
+          ]}
+          onClose={() => setShowResultPrint(false)}
         />
       )}
     </div>
