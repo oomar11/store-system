@@ -3045,36 +3045,48 @@ export default function POSPage({
                     <Plus className="h-4 w-4" />
                   </button>
                 </div>
-                {priceTiers.some((t) => !t.is_default) && (
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <label
-                      htmlFor="pos-price-tier"
-                      className="shrink-0 text-xs font-medium text-gray-500"
-                    >
-                      شريحة السعر:
-                    </label>
-                    <select
-                      id="pos-price-tier"
-                      value={selectedTierId || ""}
-                      onChange={(e) =>
-                        selectPriceTier(e.target.value || null)
-                      }
-                      className="min-w-[9rem] flex-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm font-medium text-gray-800 focus:border-blue-500 focus:outline-none max-lg:min-h-11"
-                    >
-                      <option value="">تجزئة (افتراضي)</option>
-                      {priceTiers
-                        .filter((t) => !t.is_default)
-                        .map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.name}
-                          </option>
-                        ))}
-                    </select>
-                    <span className="basis-full text-[11px] text-gray-400">
-                      اختَر الشريحة لتحديث أسعار الأصناف في الفاتورة فوراً
-                    </span>
-                  </div>
-                )}
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <label
+                    htmlFor="pos-price-tier"
+                    className="shrink-0 text-xs font-medium text-gray-500"
+                  >
+                    شريحة السعر:
+                  </label>
+                  {priceTiers.some((t) => !t.is_default) ? (
+                    <>
+                      <select
+                        id="pos-price-tier"
+                        value={selectedTierId || ""}
+                        onChange={(e) =>
+                          selectPriceTier(e.target.value || null)
+                        }
+                        className="min-w-[9rem] flex-1 rounded-lg border border-blue-200 bg-blue-50/60 px-2.5 py-1.5 text-sm font-semibold text-blue-900 focus:border-blue-500 focus:outline-none max-lg:min-h-11"
+                      >
+                        <option value="">تجزئة (افتراضي)</option>
+                        {priceTiers
+                          .filter((t) => !t.is_default)
+                          .map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.name}
+                            </option>
+                          ))}
+                      </select>
+                      <span className="basis-full text-[11px] text-gray-400">
+                        اختَر الشريحة لتحديث أسعار الأصناف في الفاتورة فوراً
+                      </span>
+                    </>
+                  ) : (
+                    <p className="flex-1 text-xs text-amber-700">
+                      لا توجد شرائح بعد — أنشئ شريحة من{" "}
+                      <Link
+                        href="/settings?tab=tiers"
+                        className="font-semibold underline underline-offset-2"
+                      >
+                        الإعدادات ← شرائح الأسعار
+                      </Link>
+                    </p>
+                  )}
+                </div>
                 {selectedCustomer && (
                   <div className="mt-1.5 flex items-center justify-between px-1 text-xs text-gray-500">
                     <span>الرصيد الحالي للعميل:</span>
