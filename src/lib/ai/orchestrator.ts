@@ -1,5 +1,9 @@
 import type { Content, Part } from "@google/generative-ai";
 import { createGeminiModel, isGeminiConfigured } from "./gemini";
+import {
+  looksLikeGeminiApiKey,
+  saveGeminiApiKey,
+} from "./gemini-config";
 import { executeBusinessTool } from "./tool-handlers";
 import { getChatHistory, setChatHistory, clearChatHistory } from "./history";
 import {
@@ -23,6 +27,19 @@ function extractText(parts: Part[] | undefined): string {
     .trim();
 }
 
+function extractGeminiKeyCommand(text: string): string | null {
+  const trimmed = text.trim();
+  const cmd = trimmed.match(
+    /^\/(?:gemini|set_gemini|setkey|مفتاح)(?:@\w+)?(?:\s+|$)([\s\S]*)$/i
+  );
+  if (cmd) {
+    const rest = (cmd[1] || "").trim();
+    return rest || null;
+  }
+  if (looksLikeGeminiApiKey(trimmed)) return trimmed;
+  return null;
+}
+
 export async function handleJarvisMessage(
   chatId: string,
   userText: string
@@ -35,24 +52,51 @@ export async function handleJarvisMessage(
   const lower = text.toLowerCase();
   if (lower === "/start" || lower === "start") {
     clearChatHistory(chatId);
-    return { text: JARVIS_START_MESSAGE, usedTools: [] };
+    const ready = await isGeminiConfigured();
+    return {
+      text: ready
+        ? JARVIS_START_MESSAGE
+        : `${JARVIS_START_MESSAGE}\n\n⚠️ المفتاح لسه مش محفوظ. ابعت:\n/gemini مفتاح_Gemini`,
+      usedTools: [],
+    };
   }
   if (lower === "/help" || lower === "help" || text === "مساعدة") {
-    return { text: JARVIS_HELP_MESSAGE, usedTools: [] };
+    return {
+      text: `${JARVIS_HELP_MESSAGE}\n\nضبط المفتاح:\n/gemini YOUR_API_KEY`,
+      usedTools: [],
+    };
   }
   if (lower === "/reset" || lower === "reset") {
     clearChatHistory(chatId);
     return { text: "تم مسح سياق المحادثة. اسأل من جديد.", usedTools: [] };
   }
 
-  if (!isGeminiConfigured()) {
+  const keyFromMsg = extractGeminiKeyCommand(text);
+  if (keyFromMsg !== null) {
+    if (!keyFromMsg) {
+      return {
+        text: "ابعت المفتاح بعد الأمر، مثال:\n/gemini AQ.xxxxx",
+        usedTools: [],
+      };
+    }
+    const saved = await saveGeminiApiKey({ api_key: keyFromMsg });
+    if (!saved.ok) {
+      return { text: `فشل حفظ المفتاح: ${saved.error}`, usedTools: [] };
+    }
     return {
-      text: "المساعد غير جاهز — لازم يتعمل إعداد GEMINI_API_KEY على السيرفر.",
+      text: `✅ تم حفظ مفتاح Gemini (${saved.key_masked}).\nتقدر تسألني عن المبيعات والمخزون دلوقتي.`,
       usedTools: [],
     };
   }
 
-  const model = createGeminiModel();
+  if (!(await isGeminiConfigured())) {
+    return {
+      text: "المساعد غير جاهز — ابعت مفتاح Gemini كده:\n/gemini YOUR_API_KEY",
+      usedTools: [],
+    };
+  }
+
+  const model = await createGeminiModel();
   const history = getChatHistory(chatId);
   const chat = model.startChat({ history });
   const usedTools: string[] = [];

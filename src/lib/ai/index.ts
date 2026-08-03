@@ -1,4 +1,10 @@
 export { isGeminiConfigured, getGeminiModelName, createGeminiModel } from "./gemini";
+export {
+  loadGeminiApiKey,
+  saveGeminiApiKey,
+  getGeminiConfigPublic,
+  looksLikeGeminiApiKey,
+} from "./gemini-config";
 export { handleJarvisMessage } from "./orchestrator";
 export { executeBusinessTool } from "./tool-handlers";
 export {

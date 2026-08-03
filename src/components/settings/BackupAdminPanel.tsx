@@ -40,6 +40,8 @@ type TelegramPublic = {
 type AiSetupStatus = {
   telegram_configured: boolean;
   gemini_configured: boolean;
+  gemini_source?: string;
+  gemini_key_masked?: string;
   webhook_secret_configured: boolean;
   webhook_url: string;
   model: string;
@@ -78,6 +80,7 @@ export function BackupAdminPanel() {
   const [tgToken, setTgToken] = useState("");
   const [tgMeta, setTgMeta] = useState<TelegramPublic | null>(null);
   const [aiStatus, setAiStatus] = useState<AiSetupStatus | null>(null);
+  const [geminiKeyInput, setGeminiKeyInput] = useState("");
 
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restoreConfirm, setRestoreConfirm] = useState("");
@@ -156,6 +159,29 @@ export function BackupAdminPanel() {
       await loadAiStatus();
     } catch (e) {
       flash("err", e instanceof Error ? e.message : "فشل العملية");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveGeminiKey() {
+    setBusy("ai-save-key");
+    try {
+      const res = await fetch("/api/telegram/ai-setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_key",
+          api_key: geminiKeyInput.trim(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "فشل حفظ المفتاح");
+      setGeminiKeyInput("");
+      flash("ok", `تم حفظ مفتاح Gemini (${data.key_masked || "••••"})`);
+      await loadAiStatus();
+    } catch (e) {
+      flash("err", e instanceof Error ? e.message : "فشل حفظ المفتاح");
     } finally {
       setBusy(null);
     }
@@ -434,7 +460,7 @@ export function BackupAdminPanel() {
 
       <SettingsCard
         title="مساعد جارفس (تيليجرام + Gemini)"
-        description="اسأل عن المبيعات والمخزون والأرصدة والخزنة من تيليجرام. قراءة وتحليل فقط — بدون تعديل بيانات. يتطلب GEMINI_API_KEY و TELEGRAM_WEBHOOK_SECRET في بيئة Vercel."
+        description="اسأل عن المبيعات والمخزون والأرصدة والخزنة من تيليجرام. قراءة وتحليل فقط. احفظ مفتاح Gemini هنا أو ابعت من تيليجرام: /gemini مفتاحك"
         icon={Bot}
       >
         {aiStatus && (
@@ -449,20 +475,12 @@ export function BackupAdminPanel() {
                 }
               >
                 {aiStatus.gemini_configured
-                  ? `جاهز (${aiStatus.model})`
+                  ? `جاهز (${aiStatus.gemini_key_masked || aiStatus.model}${
+                      aiStatus.gemini_source
+                        ? ` · ${aiStatus.gemini_source}`
+                        : ""
+                    })`
                   : "غير مضبوط"}
-              </span>
-            </div>
-            <div>
-              Webhook secret:{" "}
-              <span
-                className={
-                  aiStatus.webhook_secret_configured
-                    ? "font-medium text-green-700"
-                    : "font-medium text-amber-700"
-                }
-              >
-                {aiStatus.webhook_secret_configured ? "مضبوط" : "ناقص"}
               </span>
             </div>
             <div>
@@ -481,6 +499,38 @@ export function BackupAdminPanel() {
             </div>
           </div>
         )}
+
+        <div className="mb-4 space-y-2">
+          <label className="block text-sm font-medium text-gray-700">
+            مفتاح Gemini API
+          </label>
+          <input
+            type="password"
+            value={geminiKeyInput}
+            onChange={(e) => setGeminiKeyInput(e.target.value)}
+            placeholder={
+              aiStatus?.gemini_key_masked
+                ? `محفوظ: ${aiStatus.gemini_key_masked}`
+                : "الصق مفتاح Gemini هنا"
+            }
+            className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-200"
+            disabled={!!busy}
+            autoComplete="off"
+          />
+          <button
+            type="button"
+            disabled={!!busy || !geminiKeyInput.trim()}
+            onClick={saveGeminiKey}
+            className="inline-flex items-center gap-2 rounded-lg bg-slate-800 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-900 disabled:opacity-50"
+          >
+            {busy === "ai-save-key" ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4" />
+            )}
+            حفظ مفتاح Gemini
+          </button>
+        </div>
 
         <div className="flex flex-wrap gap-2">
           <button

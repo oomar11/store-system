@@ -125,22 +125,17 @@ export async function registerTelegramWebhook(): Promise<{
   url: string;
   description?: string;
 }> {
-  const secret = getWebhookSecret();
-  if (!secret) {
-    return {
-      ok: false,
-      url: getWebhookUrl(),
-      description:
-        "أضف TELEGRAM_WEBHOOK_SECRET في متغيرات البيئة ثم أعد النشر",
-    };
-  }
   const url = getWebhookUrl();
-  const res = await telegramBotApi("setWebhook", {
+  const secret = getWebhookSecret();
+  const payload: Record<string, unknown> = {
     url,
-    secret_token: secret,
     allowed_updates: ["message"],
     drop_pending_updates: false,
-  });
+  };
+  if (secret) {
+    payload.secret_token = secret;
+  }
+  const res = await telegramBotApi("setWebhook", payload);
   return {
     ok: res.ok,
     url,
