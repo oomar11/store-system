@@ -3,7 +3,7 @@ import { JARVIS_SYSTEM_PROMPT } from "./system-prompt";
 import { businessTools } from "./tools";
 import { loadGeminiApiKey } from "./gemini-config";
 
-const DEFAULT_MODEL = "gemini-flash-latest";
+const DEFAULT_MODEL = "gemini-flash-lite-latest";
 
 export { isGeminiConfigured, loadGeminiApiKey } from "./gemini-config";
 

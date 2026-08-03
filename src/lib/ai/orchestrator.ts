@@ -38,15 +38,8 @@ function extractFunctionCalls(parts: Part[] | undefined) {
 
 function sanitizeModelParts(parts: Part[] | undefined): Part[] {
   if (!parts?.length) return [{ text: "" }];
-  const cleaned: Part[] = [];
-  for (const p of parts) {
-    if ("text" in p && p.text != null) {
-      cleaned.push({ text: p.text });
-    } else if ("functionCall" in p && p.functionCall) {
-      cleaned.push({ functionCall: p.functionCall });
-    }
-  }
-  return cleaned.length ? cleaned : [{ text: "" }];
+  // Preserve thoughtSignature / functionCall fields required by newer Gemini models.
+  return parts.map((p) => ({ ...p })) as Part[];
 }
 
 /** Keep only plain user/model text turns for short chat memory. */
