@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase";
 import { Modal } from "@/components/ui/Modal";
 import { parseNumberInput, smartSearchMatch } from "@/lib/utils";
@@ -9,6 +9,12 @@ import {
   PRODUCTS_OPENING_SETUP_SQL,
   PRODUCTS_OPENING_SETUP_SQL_URL,
 } from "@/lib/products-opening-setup";
+import {
+  DEFAULT_BUY_DISCOUNT_FROM_SELL_PERCENT,
+  estimatedBuyPriceFromSell,
+  isEstimatedBuyFromSell,
+  resolveBuyPrice,
+} from "@/lib/product-cost";
 import {
   deleteProductTierPrices,
   listPriceTiers,
@@ -22,6 +28,16 @@ function generateRandomSku(): string {
   const ts = Date.now().toString(36).toUpperCase().slice(-4);
   const rand = Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
   return `P${ts}${rand}`.slice(0, 12);
+}
+
+function initialBuyPrice(product: Product | null): number {
+  const sell = Number(product?.sell_price) || 0;
+  const buy = Number(product?.buy_price) || 0;
+  // Legacy catalog: buy was copied from sell → treat as missing cost
+  if (sell > 0 && (buy <= 0 || Math.abs(buy - sell) < 0.005)) {
+    return estimatedBuyPriceFromSell(sell);
+  }
+  return buy;
 }
 
 const CREATE_CATEGORY_ID = "__create__";
@@ -48,7 +64,7 @@ export function ProductForm({
     category_id: product?.category_id || "",
     unit: product?.unit || "قطعة",
     pack_size: Number(product?.pack_size ?? 1) || 1,
-    buy_price: product?.buy_price || 0,
+    buy_price: initialBuyPrice(product),
     sell_price: product?.sell_price || 0,
     // لا نخلط الافتتاحي بالكمية الحالية — لو مفيش افتتاحي يبقى 0
     opening_quantity: Number(product?.opening_quantity ?? 0),
@@ -71,6 +87,16 @@ export function ProductForm({
   });
   const [showCategoryList, setShowCategoryList] = useState(false);
   const [activeCategoryIndex, setActiveCategoryIndex] = useState(0);
+  /** User typed buy_price manually — stop auto-syncing from sell */
+  const buyManuallyEdited = useRef(
+    !!product &&
+      Number(product.buy_price) > 0 &&
+      Math.abs(Number(product.buy_price) - Number(product.sell_price)) >= 0.005 &&
+      !isEstimatedBuyFromSell(
+        Number(product.buy_price),
+        Number(product.sell_price)
+      )
+  );
   const supabase = createClient();
   const { error: toastError, success: toastSuccess } = useToast();
 
@@ -291,6 +317,8 @@ export function ProductForm({
     }
 
     const opening_quantity = Number(form.opening_quantity) || 0;
+    // No fixed buy price: opening / catalog cost = sell − default trade discount
+    const buyPrice = resolveBuyPrice(form.buy_price, sellPrice);
 
     const data: Record<string, unknown> = {
       name: form.name,
@@ -298,7 +326,7 @@ export function ProductForm({
       category_id: form.category_id || null,
       unit: form.unit,
       pack_size: Math.max(1, Number(form.pack_size) || 1),
-      buy_price: Number(form.buy_price),
+      buy_price: buyPrice,
       sell_price: sellPrice,
       opening_quantity,
       min_quantity: Number(form.min_quantity),
@@ -605,11 +633,19 @@ export function ProductForm({
               value={form.buy_price === 0 ? "" : form.buy_price}
               onChange={(e) => {
                 const n = parseNumberInput(e.target.value);
+                buyManuallyEdited.current = true;
                 setForm({ ...form, buy_price: n === null ? 0 : n });
               }}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
               dir="ltr"
             />
+            <p className="mt-1 text-[10px] text-gray-400">
+              افتراضي للرصيد الافتتاحي: خصم {DEFAULT_BUY_DISCOUNT_FROM_SELL_PERCENT}٪
+              من سعر البيع
+              {form.sell_price > 0
+                ? ` (= ${estimatedBuyPriceFromSell(Number(form.sell_price))})`
+                : ""}
+            </p>
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">
@@ -621,7 +657,19 @@ export function ProductForm({
               value={form.sell_price === 0 ? "" : form.sell_price}
               onChange={(e) => {
                 const n = parseNumberInput(e.target.value);
-                setForm({ ...form, sell_price: n === null ? 0 : n });
+                const sell = n === null ? 0 : n;
+                setForm((prev) => {
+                  const next = { ...prev, sell_price: sell };
+                  if (
+                    !buyManuallyEdited.current ||
+                    prev.buy_price <= 0 ||
+                    isEstimatedBuyFromSell(prev.buy_price, prev.sell_price)
+                  ) {
+                    next.buy_price = estimatedBuyPriceFromSell(sell);
+                    buyManuallyEdited.current = false;
+                  }
+                  return next;
+                });
               }}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
               dir="ltr"
