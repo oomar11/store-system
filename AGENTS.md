@@ -43,6 +43,17 @@ npx vercel --prod --yes
 Mobile: https://store-system-rho.vercel.app/m  
 Always verify changes on this host (not `store-system-iota` or Preview URLs).
 
+### مساعد جارفس — متغيرات Vercel (مشروع rho)
+لازم تكون موجودة على Production:
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`  ← ضروري لقراءة إعدادات تيليجرام وبيانات المحل
+- (اختياري) `GEMINI_API_KEY` — أو يُحفظ من تيليجرام `/gemini` / الإعدادات
+- (اختياري) `TELEGRAM_WEBHOOK_SECRET`
+
+بعد إضافة المتغيرات: Redeploy، ثم الإعدادات → مساعد جارفس → تفعيل المساعد.  
+فحص سريع: `GET https://store-system-rho.vercel.app/api/telegram/webhook` لازم يرجّع `telegram_configured: true`.
+
 ## Commit Attribution
 AI commits MUST include:
 ```
