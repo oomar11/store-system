@@ -46,6 +46,7 @@ import {
   listPriceTiers,
   loadTierPricingContext,
   resolveSellPrice,
+  snapshotListUnitPrice,
   type TierPricingContext,
 } from "@/lib/price-tiers";
 import {
@@ -124,6 +125,8 @@ interface CartItem {
   total: number;
   /** Cost snapshot from DB when editing; undefined for new cart lines */
   unit_cost?: number | null;
+  /** Retail unit price before tier markdown (for invoice print) */
+  list_unit_price?: number | null;
 }
 
 function cartLineUnitCost(item: CartItem): number {
@@ -737,6 +740,10 @@ export default function POSPage({
               return {
                 ...item,
                 unit_price: unitPrice,
+                list_unit_price: snapshotListUnitPrice(
+                  item.product.sell_price,
+                  unitPrice
+                ),
                 total: unitPrice * item.quantity - item.discount,
               };
             })
@@ -787,6 +794,10 @@ export default function POSPage({
         return {
           ...item,
           unit_price: unitPrice,
+          list_unit_price: snapshotListUnitPrice(
+            item.product.sell_price,
+            unitPrice
+          ),
           total: unitPrice * item.quantity - item.discount,
         };
       })
@@ -945,6 +956,16 @@ export default function POSPage({
           total: Number(line.total),
           unit_cost:
             line.unit_cost != null ? Number(line.unit_cost) : null,
+          list_unit_price:
+            (line as { list_unit_price?: number | null }).list_unit_price !=
+            null
+              ? Number(
+                  (line as { list_unit_price?: number | null }).list_unit_price
+                )
+              : snapshotListUnitPrice(
+                  Number((line.product as Product)?.sell_price) || 0,
+                  Number(line.unit_price)
+                ),
         })) || []
       );
       setSelectedCustomer((inv.customer as Customer) || null);
@@ -1070,6 +1091,16 @@ export default function POSPage({
           unit_price: Number(line.unit_price),
           discount: Number(line.discount) || 0,
           total: Number(line.total),
+          list_unit_price:
+            (line as { list_unit_price?: number | null }).list_unit_price !=
+            null
+              ? Number(
+                  (line as { list_unit_price?: number | null }).list_unit_price
+                )
+              : snapshotListUnitPrice(
+                  Number((line.product as Product)?.sell_price) || 0,
+                  Number(line.unit_price)
+                ),
         })) || []
       );
       setSelectedCustomer((doc.customer as Customer) || null);
@@ -1288,6 +1319,9 @@ export default function POSPage({
           }
 
           const total = Math.max(0, qty * unitPrice - discount);
+          const listFromSource = (
+            line as { list_unit_price?: number | null }
+          ).list_unit_price;
           return {
             product,
             quantity: qty,
@@ -1295,6 +1329,11 @@ export default function POSPage({
             discount,
             total,
             unit_cost: keepPrices ? line.unit_cost : undefined,
+            list_unit_price: sellSide
+              ? keepPrices && listFromSource != null
+                ? Number(listFromSource)
+                : snapshotListUnitPrice(product.sell_price, unitPrice)
+              : null,
           };
         });
 
@@ -1513,6 +1552,9 @@ export default function POSPage({
           discount: 0,
           total: unitPrice * addQty,
           unit_cost: Number(product.buy_price) || 0,
+          list_unit_price: isPurchaseSide
+            ? null
+            : snapshotListUnitPrice(product.sell_price, unitPrice),
         },
       ]);
     }
@@ -1528,6 +1570,16 @@ export default function POSPage({
         if (i !== index) return item;
         const updated = { ...item, ...updates };
         updated.total = updated.quantity * updated.unit_price - updated.discount;
+        if (
+          !isPurchaseSide &&
+          updates.unit_price != null &&
+          updates.list_unit_price === undefined
+        ) {
+          updated.list_unit_price = snapshotListUnitPrice(
+            item.product.sell_price,
+            updated.unit_price
+          );
+        }
         return updated;
       })
     );
@@ -2155,6 +2207,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))
         );
         if (itemsError) throw new Error(itemsError.message);
@@ -2184,6 +2237,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))
         );
         if (itemsError) throw new Error(itemsError.message);
@@ -2233,6 +2287,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))
         );
         if (itemsError) throw new Error(itemsError.message);
@@ -2265,6 +2320,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))
         );
         if (itemsError) throw new Error(itemsError.message);
@@ -3402,6 +3458,13 @@ export default function POSPage({
                           {formatCurrency(item.unit_price)}
                         </span>
                       )}
+                      {item.list_unit_price != null &&
+                        item.list_unit_price > item.unit_price + 0.001 && (
+                          <span className="basis-full text-[10px] text-emerald-700">
+                            قبل {formatCurrency(item.list_unit_price)} → بعد{" "}
+                            {formatCurrency(item.unit_price)}
+                          </span>
+                        )}
                     </div>
 
                     <div className="shrink-0 text-left text-sm font-bold tabular-nums text-blue-700">
@@ -3797,6 +3860,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))}
           partyName={selectedCustomer?.name}
           partyPhone={selectedCustomer?.phone}
@@ -3844,6 +3908,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))}
           partyName={selectedCustomer?.name}
           partyPhone={selectedCustomer?.phone}
@@ -3871,6 +3936,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))}
           partyName={selectedSupplier?.name}
           partyPhone={selectedSupplier?.phone}

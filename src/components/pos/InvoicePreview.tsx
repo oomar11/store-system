@@ -14,6 +14,10 @@ import {
   resolvePrintFormats,
   type PrintFormatsConfig,
 } from "@/lib/print-formats";
+import {
+  formatListMarkdownLabel,
+  hasListMarkdown,
+} from "@/lib/print-list-price";
 
 interface CartItem {
   product: { name: string; sku: string };
@@ -21,6 +25,8 @@ interface CartItem {
   unit_price: number;
   discount: number;
   total: number;
+  /** Retail before tier markdown */
+  list_unit_price?: number | null;
 }
 
 interface InvoicePreviewProps {
@@ -423,6 +429,14 @@ function InvoiceContent({
                   {formatCurrency(item.total)}
                 </span>
               </div>
+              {hasListMarkdown(item.list_unit_price, item.unit_price) ? (
+                <p className="text-[8px] text-emerald-700">
+                  {formatListMarkdownLabel(
+                    Number(item.list_unit_price),
+                    item.unit_price
+                  )}
+                </p>
+              ) : null}
               {printOpts.show_item_discount && item.discount > 0 ? (
                 <p className="text-[8px] text-red-500">
                   خصم: -{formatCurrency(item.discount)}

@@ -70,6 +70,7 @@ type PreviewState = {
     unit_price: number;
     discount: number;
     total: number;
+    list_unit_price?: number | null;
   }[];
   customer: Customer | null;
   safeName?: string;
@@ -279,6 +280,13 @@ export default function SalesPage() {
           unit_price: Number(line.unit_price),
           discount: Number(line.discount) || 0,
           total: Number(line.total),
+          list_unit_price:
+            (line as { list_unit_price?: number | null }).list_unit_price !=
+            null
+              ? Number(
+                  (line as { list_unit_price?: number | null }).list_unit_price
+                )
+              : null,
         })) || [],
     };
   }
@@ -719,7 +727,15 @@ export default function SalesPage() {
                           </p>
                         </td>
                         <td className="px-2 py-1.5">{line.quantity}</td>
-                        <td className="px-2 py-1.5">{formatCurrency(line.unit_price)}</td>
+                        <td className="px-2 py-1.5">
+                          {formatCurrency(line.unit_price)}
+                          {line.list_unit_price != null &&
+                            line.list_unit_price > line.unit_price + 0.001 && (
+                              <p className="text-[10px] text-emerald-700">
+                                قبل {formatCurrency(line.list_unit_price)}
+                              </p>
+                            )}
+                        </td>
                         <td className="px-2 py-1.5">{formatCurrency(line.discount)}</td>
                         <td className="px-2 py-1.5 font-semibold">
                           {formatCurrency(line.total)}

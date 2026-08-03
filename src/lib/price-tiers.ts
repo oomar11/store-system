@@ -78,6 +78,20 @@ function applyPercentOffRetail(retail: number, percent: number): number {
 }
 
 /**
+ * Retail list price to store when the charged unit price is lower (tier markdown).
+ * Returns null when there is no markdown to show on the invoice.
+ */
+export function snapshotListUnitPrice(
+  retail: number,
+  chargedUnitPrice: number
+): number | null {
+  const list = Math.round((Number(retail) || 0) * 100) / 100;
+  const charged = Math.round((Number(chargedUnitPrice) || 0) * 100) / 100;
+  if (list > charged + 0.001) return list;
+  return null;
+}
+
+/**
  * Resolve sell price for a product given an optional customer tier.
  * Priority: fixed tier price (non-default) → product % → category % → retail.
  */
