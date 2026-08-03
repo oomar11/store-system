@@ -23,6 +23,8 @@ export type PosDraftCart = {
   validUntil?: string;
   expectedDate?: string;
   purchasePriceBasis?: "buy" | "sell";
+  /** Active price tier for this draft (null/omit = retail). */
+  priceTierId?: string | null;
 };
 
 function storageKey(userId: string | null | undefined, mode: string): string {

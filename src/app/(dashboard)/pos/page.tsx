@@ -43,6 +43,7 @@ import {
 import { safesOrderQuery } from "@/lib/safes-order";
 import { formatRpcError } from "@/lib/rpc-error";
 import {
+  listPriceTiers,
   loadTierPricingContext,
   resolveSellPrice,
   type TierPricingContext,
@@ -96,7 +97,7 @@ import { isReceiptLayout } from "@/lib/print-formats";
 import { QuickPartyForm } from "@/components/parties/QuickPartyForm";
 import { DateField } from "@/components/ui/DateField";
 import { useUrlSearchTerm } from "@/hooks/useUrlSearchTerm";
-import type { Product, Customer, Supplier, Settings, Safe } from "@/types";
+import type { Product, Customer, Supplier, Settings, Safe, PriceTier } from "@/types";
 import {
   AlertTriangle,
   ClipboardList,
@@ -233,8 +234,6 @@ export default function POSPage({
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
-  const selectedCustomerRef = useRef<Customer | null>(null);
-  selectedCustomerRef.current = selectedCustomer;
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   const [searchTerm, setSearchTerm] = useUrlSearchTerm();
   const [partySearch, setPartySearch] = useState("");
@@ -286,6 +285,7 @@ export default function POSPage({
     validUntil: "",
     expectedDate: "",
     purchasePriceBasis: "buy" as "buy" | "sell",
+    selectedTierId: null as string | null,
   });
 
   const [activeProductIndex, setActiveProductIndex] = useState<number>(0);
@@ -295,6 +295,11 @@ export default function POSPage({
   );
   const [settings, setSettings] = useState<Settings | null>(null);
   const [tierPricing, setTierPricing] = useState<TierPricingContext>({});
+  const [priceTiers, setPriceTiers] = useState<PriceTier[]>([]);
+  /** Active sell-side price tier for this invoice (null = retail / default). */
+  const [selectedTierId, setSelectedTierId] = useState<string | null>(null);
+  const selectedTierIdRef = useRef<string | null>(null);
+  selectedTierIdRef.current = selectedTierId;
   const [heldCarts, setHeldCarts] = useState<HeldCartSnapshot[]>([]);
   const [showHeldPanel, setShowHeldPanel] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -328,6 +333,7 @@ export default function POSPage({
     validUntil,
     expectedDate,
     purchasePriceBasis,
+    selectedTierId,
   };
 
   function saveDraftFromSnap(
@@ -349,6 +355,7 @@ export default function POSPage({
       validUntil: snap.validUntil,
       expectedDate: snap.expectedDate,
       purchasePriceBasis: snap.purchasePriceBasis,
+      priceTierId: snap.selectedTierId,
     });
   }
 
@@ -405,6 +412,14 @@ export default function POSPage({
     setValidUntil(draft.validUntil || "");
     setExpectedDate(draft.expectedDate || "");
     if (draft.purchasePriceBasis) setPurchasePriceBasis(draft.purchasePriceBasis);
+    if (draft.priceTierId !== undefined) {
+      setSelectedTierId(draft.priceTierId || null);
+    } else if (draft.customerId) {
+      const c = customers.find((x) => x.id === draft.customerId);
+      setSelectedTierId(c?.price_tier_id || null);
+    } else {
+      setSelectedTierId(null);
+    }
     return true;
   }
 
@@ -421,6 +436,7 @@ export default function POSPage({
         fetchSettings(),
         fetchSafes(),
         fetchTierPrices(),
+        fetchPriceTiers(),
       ]);
       searchRef.current?.focus();
 
@@ -499,6 +515,7 @@ export default function POSPage({
     validUntil,
     expectedDate,
     purchasePriceBasis,
+    selectedTierId,
     isEditing,
   ]);
 
@@ -711,13 +728,9 @@ export default function POSPage({
       network: async () => loadTierPricingContext(supabase),
       apply: (data) => {
         setTierPricing(data);
-        // Re-price if a tiered customer was already selected before context arrived
-        const customer = selectedCustomerRef.current;
-        if (
-          customer?.price_tier_id &&
-          !isPurchaseSideMode(modeRef.current)
-        ) {
-          const tierId = customer.price_tier_id;
+        // Re-price if a tier was already selected before context arrived
+        const tierId = selectedTierIdRef.current;
+        if (tierId && !isPurchaseSideMode(modeRef.current)) {
           setCart((prev) =>
             prev.map((item) => {
               const unitPrice = resolveSellPrice(item.product, tierId, data);
@@ -733,13 +746,44 @@ export default function POSPage({
     });
   }
 
-  function applyCustomerPricing(customer: Customer | null) {
-    // Sale + quote (sell-side) — purchase modes use buy/sell basis instead
+  async function fetchPriceTiers() {
+    await readLocalThenNetwork({
+      offline: !isBrowserOnline(),
+      timeoutMs: 5000,
+      local: async () => {
+        const snap = await getSnapshot();
+        const tiers = snap?.tierPricing?.tiers;
+        if (!tiers?.length) return null;
+        return tiers.map((t) => ({
+          id: t.id,
+          name: t.name,
+          is_default: t.is_default,
+          sort_order: 0,
+          created_at: "",
+        })) as PriceTier[];
+      },
+      network: async () => listPriceTiers(supabase),
+      apply: (data) => setPriceTiers(data),
+    });
+  }
+
+  function tierIdFromCustomer(customer: Customer | null): string | null {
+    const id = customer?.price_tier_id ?? null;
+    if (!id) return null;
+    if (customer?.price_tier?.is_default) return null;
+    const meta = priceTiers.find((t) => t.id === id);
+    if (meta?.is_default) return null;
+    return id;
+  }
+
+  function applyTierToCart(
+    tierId: string | null,
+    pricing: TierPricingContext = tierPricing
+  ) {
     if (isPurchaseSide) return;
-    const tierId = customer?.price_tier_id ?? null;
     setCart((prev) =>
       prev.map((item) => {
-        const unitPrice = resolveSellPrice(item.product, tierId, tierPricing);
+        const unitPrice = resolveSellPrice(item.product, tierId, pricing);
         return {
           ...item,
           unit_price: unitPrice,
@@ -749,9 +793,16 @@ export default function POSPage({
     );
   }
 
+  function selectPriceTier(tierId: string | null) {
+    setSelectedTierId(tierId);
+    applyTierToCart(tierId);
+  }
+
   function selectCustomer(customer: Customer | null) {
     setSelectedCustomer(customer);
-    applyCustomerPricing(customer);
+    const tierId = tierIdFromCustomer(customer);
+    setSelectedTierId(tierId);
+    applyTierToCart(tierId);
   }
 
   async function fetchSuppliers() {
@@ -897,6 +948,7 @@ export default function POSPage({
         })) || []
       );
       setSelectedCustomer((inv.customer as Customer) || null);
+      setSelectedTierId(tierIdFromCustomer((inv.customer as Customer) || null));
       setSelectedSupplier(null);
       setPaymentMethod(inv.payment_method === "credit" ? "credit" : "cash");
       setPaidAmount(Number(inv.paid_amount) || 0);
@@ -958,6 +1010,7 @@ export default function POSPage({
       );
       setSelectedSupplier((inv.supplier as Supplier) || null);
       setSelectedCustomer(null);
+      setSelectedTierId(null);
       setPaymentMethod(inv.payment_method === "credit" ? "credit" : "cash");
       setPaidAmount(Number(inv.paid_amount) || 0);
       const linkedSafeId = await resolveInvoiceSafeId(
@@ -1020,6 +1073,7 @@ export default function POSPage({
         })) || []
       );
       setSelectedCustomer((doc.customer as Customer) || null);
+      setSelectedTierId(tierIdFromCustomer((doc.customer as Customer) || null));
       setSelectedSupplier(null);
       setDiscount(Number(doc.discount_amount) || 0);
       setDiscountType("amount");
@@ -1073,6 +1127,7 @@ export default function POSPage({
       );
       setSelectedSupplier((doc.supplier as Supplier) || null);
       setSelectedCustomer(null);
+      setSelectedTierId(null);
       setDiscount(Number(doc.discount_amount) || 0);
       setDiscountType("amount");
       setExpectedDate(doc.expected_date || "");
@@ -1263,12 +1318,15 @@ export default function POSPage({
       if (keepParty && sellSide) {
         setSelectedCustomer(customer);
         setSelectedSupplier(null);
+        setSelectedTierId(tierIdFromCustomer(customer));
       } else if (keepParty && !sellSide) {
         setSelectedSupplier(supplier);
         setSelectedCustomer(null);
+        setSelectedTierId(null);
       } else {
         setSelectedCustomer(null);
         setSelectedSupplier(null);
+        setSelectedTierId(null);
       }
 
       if (asMode === "sale" || asMode === "purchase") {
@@ -1336,6 +1394,7 @@ export default function POSPage({
     setCart([]);
     setSelectedCustomer(null);
     setSelectedSupplier(null);
+    setSelectedTierId(null);
     setPaidAmount(0);
     setDiscount(0);
     setNotes("");
@@ -1357,7 +1416,7 @@ export default function POSPage({
     }
     return resolveSellPrice(
       product,
-      selectedCustomer?.price_tier_id ?? null,
+      selectedTierId,
       tierPricing
     );
   }
@@ -1494,6 +1553,7 @@ export default function POSPage({
     setCart([]);
     setSelectedCustomer(null);
     setSelectedSupplier(null);
+    setSelectedTierId(null);
     setPaidAmount(0);
     setPaymentMethod("cash");
     setSelectedSafeId(pickDefaultSafeId(safes, "cash"));
@@ -1593,11 +1653,11 @@ export default function POSPage({
     }
 
     setCart(lines);
-    setSelectedCustomer(
-      held.customerId
-        ? customers.find((c) => c.id === held.customerId) || null
-        : null
-    );
+    const heldCustomer = held.customerId
+      ? customers.find((c) => c.id === held.customerId) || null
+      : null;
+    setSelectedCustomer(heldCustomer);
+    setSelectedTierId(tierIdFromCustomer(heldCustomer));
     setSelectedSupplier(
       held.supplierId
         ? suppliers.find((s) => s.id === held.supplierId) || null
@@ -2225,6 +2285,7 @@ export default function POSPage({
     setCart([]);
     setSelectedCustomer(null);
     setSelectedSupplier(null);
+    setSelectedTierId(null);
     setPaidAmount(0);
     setPaymentMethod("cash");
     setSelectedSafeId(pickDefaultSafeId(safes, "cash"));
@@ -2654,7 +2715,7 @@ export default function POSPage({
                     : product.buy_price
                   : resolveSellPrice(
                       product,
-                      selectedCustomer?.price_tier_id ?? null,
+                      selectedTierId,
                       tierPricing
                     );
                 const pack = Math.max(1, Number(product.pack_size) || 1);
@@ -2984,6 +3045,36 @@ export default function POSPage({
                     <Plus className="h-4 w-4" />
                   </button>
                 </div>
+                {priceTiers.some((t) => !t.is_default) && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <label
+                      htmlFor="pos-price-tier"
+                      className="shrink-0 text-xs font-medium text-gray-500"
+                    >
+                      شريحة السعر:
+                    </label>
+                    <select
+                      id="pos-price-tier"
+                      value={selectedTierId || ""}
+                      onChange={(e) =>
+                        selectPriceTier(e.target.value || null)
+                      }
+                      className="min-w-[9rem] flex-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm font-medium text-gray-800 focus:border-blue-500 focus:outline-none max-lg:min-h-11"
+                    >
+                      <option value="">تجزئة (افتراضي)</option>
+                      {priceTiers
+                        .filter((t) => !t.is_default)
+                        .map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name}
+                          </option>
+                        ))}
+                    </select>
+                    <span className="basis-full text-[11px] text-gray-400">
+                      اختَر الشريحة لتحديث أسعار الأصناف في الفاتورة فوراً
+                    </span>
+                  </div>
+                )}
                 {selectedCustomer && (
                   <div className="mt-1.5 flex items-center justify-between px-1 text-xs text-gray-500">
                     <span>الرصيد الحالي للعميل:</span>
