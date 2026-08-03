@@ -128,6 +128,10 @@ export function buildReportsBundle(input: {
     (s, p) => s + Number(p.quantity) * Number(p.buy_price),
     0
   );
+  const inventoryValueSell = input.products.reduce(
+    (s, p) => s + Number(p.quantity) * Number(p.sell_price),
+    0
+  );
   const lowStockCount = input.products.filter(
     (p) => Number(p.quantity) > 0 && Number(p.quantity) < Number(p.min_quantity)
   ).length;
@@ -156,6 +160,7 @@ export function buildReportsBundle(input: {
     expenses_total: expensesTotal,
     expenses_count: input.expenses.length,
     inventory_value: inventoryValue,
+    inventory_value_sell: inventoryValueSell,
     low_stock_count: lowStockCount,
     customer_debt: customerDebt,
     has_estimated_costs: hasEstimated,
@@ -244,6 +249,7 @@ export function buildReportsBundle(input: {
         margin: 0,
         stock_qty: Number(item.product?.quantity) || 0,
         stock_value: 0,
+        stock_value_sell: 0,
         stock_status: "ok",
         accuracy: resolved.isEstimated ? "estimated" : "reliable",
       };
@@ -262,6 +268,7 @@ export function buildReportsBundle(input: {
   for (const p of input.products) {
     const row = productMap.get(p.id);
     const stockVal = Number(p.quantity) * Number(p.buy_price);
+    const stockValSell = Number(p.quantity) * Number(p.sell_price);
     const status = stockStatus(Number(p.quantity), Number(p.min_quantity));
     if (row) {
       row.name = p.name;
@@ -269,6 +276,7 @@ export function buildReportsBundle(input: {
       row.category = p.category?.name || "—";
       row.stock_qty = Number(p.quantity);
       row.stock_value = stockVal;
+      row.stock_value_sell = stockValSell;
       row.stock_status = status;
       row.margin = marginPct(row.profit, row.revenue);
     } else {
@@ -284,6 +292,7 @@ export function buildReportsBundle(input: {
         margin: 0,
         stock_qty: Number(p.quantity),
         stock_value: stockVal,
+        stock_value_sell: stockValSell,
         stock_status: status,
         accuracy: "reliable",
       });

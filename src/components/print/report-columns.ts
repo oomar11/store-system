@@ -407,8 +407,13 @@ export const productProfitColumns: ReportColumn[] = [
   },
   {
     key: "stock_value",
-    label: "قيمة المخزون",
+    label: "المخزون بالتكلفة",
     getValue: (r) => formatCurrency(Number(r.stock_value ?? 0)),
+  },
+  {
+    key: "stock_value_sell",
+    label: "المخزون بسعر البيع",
+    getValue: (r) => formatCurrency(Number(r.stock_value_sell ?? 0)),
   },
   {
     key: "stock_status",

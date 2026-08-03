@@ -68,7 +68,8 @@ export function exportReportSection(section: ReportSection, data: any[]): void {
         الربح: p.profit,
         "الهامش %": Number(p.margin ?? 0).toFixed(1),
         المخزون: p.stock_qty,
-        "قيمة المخزون": p.stock_value,
+        "المخزون بالتكلفة": p.stock_value,
+        "المخزون بسعر البيع": p.stock_value_sell,
         الحالة:
           p.stock_status === "out"
             ? "نافد"

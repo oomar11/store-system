@@ -147,6 +147,7 @@ export interface ProductProfitRow {
   margin: number;
   stock_qty: number;
   stock_value: number;
+  stock_value_sell: number;
   stock_status: "ok" | "low" | "out";
   accuracy: CostAccuracy;
 }
@@ -179,6 +180,7 @@ export interface OverviewSummary {
   expenses_total: number;
   expenses_count: number;
   inventory_value: number;
+  inventory_value_sell: number;
   low_stock_count: number;
   customer_debt: number;
   has_estimated_costs: boolean;

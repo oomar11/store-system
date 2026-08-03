@@ -64,11 +64,19 @@ const cards: Array<{
   },
   {
     key: "inventory_value",
-    title: "قيمة المخزون",
+    title: "المخزون بالتكلفة",
     icon: Package,
     tone: "orange",
     getValue: (o) => formatCurrency(o.inventory_value),
     getSub: (o) => `${o.low_stock_count} أصناف منخفضة`,
+  },
+  {
+    key: "inventory_value_sell",
+    title: "المخزون بسعر البيع",
+    icon: Package,
+    tone: "violet",
+    getValue: (o) => formatCurrency(o.inventory_value_sell),
+    getSub: () => "كمية × سعر البيع",
   },
   {
     key: "customer_debt",
