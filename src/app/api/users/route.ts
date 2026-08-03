@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/backup/auth";
-import { createServiceClient } from "@/lib/supabase-service";
+import { createServerSupabaseClient } from "@/lib/supabase-server";
+import {
+  createServiceClient,
+  MISSING_SERVICE_ENV_AR,
+  tryCreateServiceClient,
+} from "@/lib/supabase-service";
 import {
   isUsingTemplate,
   normalizePermissions,
@@ -40,7 +45,10 @@ export async function GET() {
   }
 
   try {
-    const client = createServiceClient();
+    // Listing profiles works with the signed-in user session (RLS allows active users).
+    // Prefer service role when configured.
+    const client =
+      tryCreateServiceClient() ?? (await createServerSupabaseClient());
     const { data, error } = await client
       .from("profiles")
       .select("id, email, full_name, role, is_active, permissions, created_at")
@@ -93,6 +101,13 @@ export async function POST(request: NextRequest) {
 
     if (!ROLES.includes(role)) {
       return NextResponse.json({ error: "الدور غير صالح" }, { status: 400 });
+    }
+
+    if (!tryCreateServiceClient()) {
+      return NextResponse.json(
+        { error: MISSING_SERVICE_ENV_AR },
+        { status: 503 }
+      );
     }
 
     const email = `${username}@store.local`;

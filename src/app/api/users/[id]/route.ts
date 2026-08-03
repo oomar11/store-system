@@ -1,12 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePermission } from "@/lib/backup/auth";
-import { createServiceClient } from "@/lib/supabase-service";
+import { createServerSupabaseClient } from "@/lib/supabase-server";
+import {
+  createServiceClient,
+  MISSING_SERVICE_ENV_AR,
+  tryCreateServiceClient,
+} from "@/lib/supabase-service";
 import {
   isUsingTemplate,
   normalizePermissions,
 } from "@/lib/permissions";
 import { logAuditEvent } from "@/lib/audit";
 import type { UserRole } from "@/types";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
@@ -27,6 +33,10 @@ function resolvePermissionsPayload(
   return custom;
 }
 
+async function profilesClient(): Promise<SupabaseClient> {
+  return tryCreateServiceClient() ?? (await createServerSupabaseClient());
+}
+
 export async function PATCH(request: NextRequest, { params }: Params) {
   const auth = await requirePermission(
     "users.manage",
@@ -43,7 +53,8 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 
   try {
     const body = await request.json();
-    const client = createServiceClient();
+    const service = tryCreateServiceClient();
+    const client = service ?? (await createServerSupabaseClient());
 
     const { data: target, error: targetError } = await client
       .from("profiles")
@@ -95,7 +106,6 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         updates.permissions = resolved;
       }
     } else if (body.role !== undefined && target.permissions == null) {
-      // switching template role with no custom overrides — keep null
       updates.permissions = null;
     }
 
@@ -121,13 +131,33 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       }
     }
 
+    const needsAdminAuth = body.password !== undefined;
+
+    if (needsAdminAuth && !service) {
+      return NextResponse.json(
+        { error: MISSING_SERVICE_ENV_AR },
+        { status: 503 }
+      );
+    }
+
     if (Object.keys(updates).length > 0) {
-      const { error: updateError } = await client
+      const writer = service ?? client;
+      const { error: updateError } = await writer
         .from("profiles")
         .update(updates)
         .eq("id", id);
 
       if (updateError) {
+        const msg = updateError.message || "";
+        if (
+          !service &&
+          /permission|policy|فقط المالك|row-level|rls/i.test(msg)
+        ) {
+          return NextResponse.json(
+            { error: MISSING_SERVICE_ENV_AR },
+            { status: 503 }
+          );
+        }
         return NextResponse.json({ error: updateError.message }, { status: 500 });
       }
     }
@@ -140,7 +170,8 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           { status: 400 }
         );
       }
-      const { error: passError } = await client.auth.admin.updateUserById(id, {
+      const admin = service ?? createServiceClient();
+      const { error: passError } = await admin.auth.admin.updateUserById(id, {
         password,
       });
       if (passError) {
@@ -149,7 +180,8 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     }
 
     if (Object.keys(updates).length > 0 || body.password !== undefined) {
-      await logAuditEvent(client, {
+      const auditClient = service ?? client;
+      await logAuditEvent(auditClient, {
         action: "user.update",
         entityType: "user",
         entityId: id,
@@ -177,7 +209,8 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       });
     }
 
-    const { data: refreshed } = await client
+    const reader = await profilesClient();
+    const { data: refreshed } = await reader
       .from("profiles")
       .select("id, email, full_name, role, is_active, permissions, created_at")
       .eq("id", id)
@@ -212,6 +245,12 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
   }
 
   try {
+    if (!tryCreateServiceClient()) {
+      return NextResponse.json(
+        { error: MISSING_SERVICE_ENV_AR },
+        { status: 503 }
+      );
+    }
     const client = createServiceClient();
 
     const { data: target, error: targetError } = await client
@@ -267,4 +306,3 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
-
