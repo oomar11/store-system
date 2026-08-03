@@ -378,53 +378,6 @@ export default function MobileFinancePage() {
               </div>
             ) : null}
 
-            {canTreasury ? (
-              <div className="mobile-action-group">
-                <p className="mobile-action-group__label">عمليات الخزنة</p>
-                <div className="mobile-action-grid mobile-action-grid--triple">
-                  <button
-                    type="button"
-                    className="mobile-action-card mobile-action-card--deposit"
-                    onClick={() => openSheet("deposit")}
-                  >
-                    <span className="mobile-action-card__icon" aria-hidden>
-                      <PlusCircle className="h-5 w-5" />
-                    </span>
-                    <span className="mobile-action-card__title">إيداع</span>
-                    <span className="mobile-action-card__hint">
-                      إضافة فلوس للخزنة
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="mobile-action-card mobile-action-card--withdraw"
-                    onClick={() => openSheet("withdraw")}
-                  >
-                    <span className="mobile-action-card__icon" aria-hidden>
-                      <MinusCircle className="h-5 w-5" />
-                    </span>
-                    <span className="mobile-action-card__title">سحب</span>
-                    <span className="mobile-action-card__hint">
-                      إخراج فلوس من الخزنة
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="mobile-action-card mobile-action-card--transfer"
-                    onClick={() => openSheet("transfer")}
-                  >
-                    <span className="mobile-action-card__icon" aria-hidden>
-                      <ArrowLeftRight className="h-5 w-5" />
-                    </span>
-                    <span className="mobile-action-card__title">تحويل</span>
-                    <span className="mobile-action-card__hint">
-                      بين الخزائن
-                    </span>
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
             {canCustomers || canSuppliers ? (
               <div className="mobile-action-group">
                 <p className="mobile-action-group__label">التحصيل والسداد</p>
@@ -490,6 +443,53 @@ export default function MobileFinancePage() {
               </div>
             ) : null}
 
+            {canTreasury ? (
+              <div className="mobile-action-group">
+                <p className="mobile-action-group__label">عمليات الخزنة</p>
+                <div className="mobile-action-grid mobile-action-grid--triple">
+                  <button
+                    type="button"
+                    className="mobile-action-card mobile-action-card--deposit"
+                    onClick={() => openSheet("deposit")}
+                  >
+                    <span className="mobile-action-card__icon" aria-hidden>
+                      <PlusCircle className="h-5 w-5" />
+                    </span>
+                    <span className="mobile-action-card__title">إيداع</span>
+                    <span className="mobile-action-card__hint">
+                      إضافة فلوس للخزنة
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="mobile-action-card mobile-action-card--withdraw"
+                    onClick={() => openSheet("withdraw")}
+                  >
+                    <span className="mobile-action-card__icon" aria-hidden>
+                      <MinusCircle className="h-5 w-5" />
+                    </span>
+                    <span className="mobile-action-card__title">سحب</span>
+                    <span className="mobile-action-card__hint">
+                      إخراج فلوس من الخزنة
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="mobile-action-card mobile-action-card--transfer"
+                    onClick={() => openSheet("transfer")}
+                  >
+                    <span className="mobile-action-card__icon" aria-hidden>
+                      <ArrowLeftRight className="h-5 w-5" />
+                    </span>
+                    <span className="mobile-action-card__title">تحويل</span>
+                    <span className="mobile-action-card__hint">
+                      بين الخزائن
+                    </span>
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
             {canTreasury && safes.length > 0 ? (
               <MobileSection title="الخزائن">
                 <div className="mobile-panel">
@@ -509,20 +509,20 @@ export default function MobileFinancePage() {
 
             <MobileSection title="آخر الحركات">
               <div className="mobile-chip-row">
-                {canTreasury ? (
-                  <MobileChip
-                    active={feed === "tx"}
-                    onClick={() => setFeed("tx")}
-                  >
-                    نقدية
-                  </MobileChip>
-                ) : null}
                 {canExpenses ? (
                   <MobileChip
                     active={feed === "expenses"}
                     onClick={() => setFeed("expenses")}
                   >
                     مصروفات
+                  </MobileChip>
+                ) : null}
+                {canTreasury ? (
+                  <MobileChip
+                    active={feed === "tx"}
+                    onClick={() => setFeed("tx")}
+                  >
+                    نقدية
                   </MobileChip>
                 ) : null}
               </div>
