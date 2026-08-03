@@ -12,15 +12,3 @@ WHERE ic.count_number = 'CNT-2608-0001'
 
 DELETE FROM inventory_counts
 WHERE count_number = 'CNT-2608-0001';
-
--- Leftover stock entered without opening and without any invoice/count movement
-UPDATE products p
-SET opening_quantity = p.quantity
-WHERE COALESCE(p.opening_quantity, 0) = 0
-  AND p.quantity > 0
-  AND NOT EXISTS (
-    SELECT 1 FROM invoice_items ii WHERE ii.product_id = p.id
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM inventory_count_items ici WHERE ici.product_id = p.id
-  );
