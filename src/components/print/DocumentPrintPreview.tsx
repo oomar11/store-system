@@ -17,6 +17,10 @@ import type { Settings } from "@/types";
 import { Printer, X, Phone, MapPin } from "lucide-react";
 import { resolveStoreName } from "./report-columns";
 import { PrintBrandMark } from "./PrintBrandMark";
+import {
+  formatListMarkdownLabel,
+  hasListMarkdown,
+} from "@/lib/print-list-price";
 
 export type PrintLineItem = {
   name: string;
@@ -25,6 +29,8 @@ export type PrintLineItem = {
   unit_price: number;
   discount: number;
   total: number;
+  /** Retail unit price before tier markdown */
+  list_unit_price?: number | null;
 };
 
 export type DocumentPrintKind =
@@ -513,6 +519,14 @@ function DocumentContent({
                       {formatCurrency(item.total)}
                     </span>
                   </div>
+                  {hasListMarkdown(item.list_unit_price, item.unit_price) ? (
+                    <p className="text-[8px] text-emerald-700">
+                      {formatListMarkdownLabel(
+                        Number(item.list_unit_price),
+                        item.unit_price
+                      )}
+                    </p>
+                  ) : null}
                   {printOpts.show_item_discount && item.discount > 0 ? (
                     <p className="text-[8px] text-red-500">
                       خصم: -{formatCurrency(item.discount)}
@@ -549,6 +563,14 @@ function DocumentContent({
                   <td className="py-1 text-center font-bold">{item.quantity}</td>
                   <td className="py-1 text-center">
                     {formatCurrency(item.unit_price)}
+                    {hasListMarkdown(item.list_unit_price, item.unit_price) ? (
+                      <span className="mt-0.5 block text-[8px] font-normal text-emerald-700">
+                        {formatListMarkdownLabel(
+                          Number(item.list_unit_price),
+                          item.unit_price
+                        )}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="py-1 text-left font-extrabold">
                     {formatCurrency(item.total)}

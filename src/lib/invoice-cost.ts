@@ -32,6 +32,8 @@ type CostCartItem = {
   total: number;
   /** Preserved snapshot when editing an existing line */
   unit_cost?: number | null;
+  /** Retail unit price before tier markdown (sale lines) */
+  list_unit_price?: number | null;
 };
 
 function round2(n: number): number {
@@ -88,6 +90,7 @@ export type InvoiceItemInsert = {
   unit_cost: number;
   discount: number;
   total: number;
+  list_unit_price?: number | null;
 };
 
 /**
@@ -138,6 +141,11 @@ export function mapCartToInvoiceItems(
       unit_cost: unitCost,
       discount: item.discount ?? 0,
       total: item.total,
+      list_unit_price:
+        item.list_unit_price != null &&
+        Number(item.list_unit_price) > Number(item.unit_price) + 0.001
+          ? Number(item.list_unit_price)
+          : null,
     };
   });
 }
@@ -165,8 +173,15 @@ export async function insertInvoiceItems(
   if (!error) return { error: null };
 
   const msg = error.message || "";
+  if (/list_unit_price/i.test(msg)) {
+    const withoutList = rows.map(({ list_unit_price: _l, ...rest }) => rest);
+    const retryList = await supabase.from("invoice_items").insert(withoutList);
+    if (!retryList.error) return { error: null };
+  }
   if (/unit_cost/i.test(msg) || /schema cache/i.test(msg) || /could not find/i.test(msg)) {
-    const withoutCost = rows.map(({ unit_cost: _c, ...rest }) => rest);
+    const withoutCost = rows.map(
+      ({ unit_cost: _c, list_unit_price: _l, ...rest }) => rest
+    );
     const retry = await supabase.from("invoice_items").insert(withoutCost);
     return { error: retry.error ? { message: retry.error.message } : null };
   }

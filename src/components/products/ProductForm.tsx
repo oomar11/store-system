@@ -240,7 +240,7 @@ export function ProductForm({
         for (const t of list.filter((x) => !x.is_default)) {
           const row = (data || []).find((r) => r.tier_id === t.id);
           next[t.id] =
-            row != null && Number(row.sell_price) !== 0
+            row != null && Number.isFinite(Number(row.sell_price))
               ? String(row.sell_price)
               : "";
         }
@@ -659,7 +659,8 @@ export function ProductForm({
               ))}
             </div>
             <p className="mt-2 text-[10px] text-gray-500">
-              سعر ثابت اختياري — اتركه فارغاً لتطبيق قواعد الخصم من الإعدادات
+              سعر ثابت اختياري يتقدّم على قواعد الخصم. اتركه فارغاً لاستخدام خصم
+              الشريحة من الإعدادات (أو سعر التجزئة إن لم توجد قواعد).
             </p>
           </div>
         )}

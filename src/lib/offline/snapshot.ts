@@ -95,16 +95,34 @@ export async function rebuildCompatSnapshot(): Promise<SnapshotBundle> {
     min_quantity: (p.min_quantity as number | null) ?? null,
   }));
 
-  const customers: SnapshotParty[] = customersRaw.map((c) => ({
-    id: String(c.id),
-    name: String(c.name || ""),
-    phone: (c.phone as string | null) ?? null,
-    balance: Number(c.balance) || 0,
-    kind: "customer" as const,
-    price_tier_id: (c.price_tier_id as string | null) ?? null,
-    is_active: c.is_active !== false,
-    last_activity_at: (c.last_activity_at as string | null) ?? null,
-  }));
+  const tierMetaById = new Map(
+    tiersRaw.map((t) => [
+      String(t.id),
+      {
+        id: String(t.id),
+        name: String(t.name || ""),
+        is_default: t.is_default === true,
+      },
+    ])
+  );
+
+  const customers: SnapshotParty[] = customersRaw.map((c) => {
+    const priceTierId = (c.price_tier_id as string | null) ?? null;
+    const priceTier = priceTierId
+      ? tierMetaById.get(priceTierId) ?? null
+      : null;
+    return {
+      id: String(c.id),
+      name: String(c.name || ""),
+      phone: (c.phone as string | null) ?? null,
+      balance: Number(c.balance) || 0,
+      kind: "customer" as const,
+      price_tier_id: priceTierId,
+      price_tier: priceTier,
+      is_active: c.is_active !== false,
+      last_activity_at: (c.last_activity_at as string | null) ?? null,
+    };
+  });
 
   const suppliers: SnapshotParty[] = suppliersRaw.map((s) => ({
     id: String(s.id),
@@ -166,6 +184,11 @@ export async function rebuildCompatSnapshot(): Promise<SnapshotBundle> {
   let tierPricing: SnapshotTierPricing | null = null;
   if (tiersRaw.length || tierPricesRaw.length) {
     tierPricing = {
+      tiers: tiersRaw.map((t) => ({
+        id: String(t.id),
+        name: String(t.name || ""),
+        is_default: t.is_default === true,
+      })),
       tierPrices: tierPricesRaw.map((r) => ({
         product_id: String(r.product_id),
         tier_id: String(r.tier_id),

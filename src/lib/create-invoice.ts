@@ -7,7 +7,13 @@ export type CreateCompletedInvoiceInput = {
   items: Array<
     Pick<
       InvoiceItemInsert,
-      "product_id" | "quantity" | "unit_price" | "unit_cost" | "discount" | "total"
+      | "product_id"
+      | "quantity"
+      | "unit_price"
+      | "unit_cost"
+      | "discount"
+      | "total"
+      | "list_unit_price"
     >
   >;
   subtotal: number;
@@ -60,6 +66,8 @@ export async function createCompletedInvoice(
       unit_cost: item.unit_cost,
       discount: item.discount ?? 0,
       total: item.total,
+      list_unit_price:
+        item.list_unit_price != null ? item.list_unit_price : null,
     })),
     p_subtotal: input.subtotal,
     p_tax_amount: input.taxAmount ?? 0,
@@ -83,6 +91,25 @@ export async function createCompletedInvoice(
   const row = data as CreateCompletedInvoiceResult | null;
   if (!row?.id || !row?.invoice_number) {
     throw new Error("تعذر حفظ الفاتورة");
+  }
+
+  // Persist tier list prices (RPC may not know the column yet on older DBs)
+  const listRows = input.items.filter(
+    (item) =>
+      item.list_unit_price != null &&
+      Number(item.list_unit_price) > Number(item.unit_price) + 0.001
+  );
+  if (listRows.length > 0) {
+    await Promise.all(
+      listRows.map((item) =>
+        supabase
+          .from("invoice_items")
+          .update({ list_unit_price: item.list_unit_price })
+          .eq("invoice_id", row.id)
+          .eq("product_id", item.product_id)
+          .eq("unit_price", item.unit_price)
+      )
+    );
   }
 
   return {

@@ -148,7 +148,7 @@ export function PriceTiersPanel() {
   return (
     <SettingsCard
       title="شرائح الأسعار"
-      description="تجزئة / جملة / خصم أقسام. اربط العميل بشريحة، واضبط قواعد الخصم أو الأسعار الثابتة من بطاقة الصنف."
+      description="قوائم أسعار للعملاء (تجزئة / جملة / خصم أقسام). إنشاء شريحة وحدها لا يغيّر السعر — لازم قواعد أو أسعار ثابتة + ربط العميل."
       icon={Tags}
       actions={
         <button
@@ -161,6 +161,23 @@ export function PriceTiersPanel() {
         </button>
       }
     >
+      <ol className="mb-4 list-decimal space-y-1 rounded-xl border border-[color-mix(in_srgb,var(--primary)_25%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_8%,var(--surface))] px-4 py-3 pr-6 text-xs leading-relaxed text-[var(--foreground)]">
+        <li>
+          أضف شريحة غير افتراضية (مثل <strong>جملة</strong>).
+        </li>
+        <li>
+          من زر <strong>قواعد</strong>: خصم % على أقسام أو أصناف — أو من بطاقة
+          الصنف ضع سعراً ثابتاً للشريحة.
+        </li>
+        <li>
+          من <strong>العملاء</strong>: اربط العميل بالشريحة.
+        </li>
+        <li>
+          في <strong>نقطة البيع</strong>: اضغط أيقونة الشرائح بجانب أزرار نوع
+          الفاتورة واختار الشريحة (مش محتاج عميل).
+        </li>
+      </ol>
+
       {loading ? (
         <div className="flex justify-center py-8">
           <Loader2 className="h-6 w-6 animate-spin text-[var(--primary)]" />

@@ -43,8 +43,10 @@ import {
 import { safesOrderQuery } from "@/lib/safes-order";
 import { formatRpcError } from "@/lib/rpc-error";
 import {
+  listPriceTiers,
   loadTierPricingContext,
   resolveSellPrice,
+  snapshotListUnitPrice,
   type TierPricingContext,
 } from "@/lib/price-tiers";
 import {
@@ -96,7 +98,7 @@ import { isReceiptLayout } from "@/lib/print-formats";
 import { QuickPartyForm } from "@/components/parties/QuickPartyForm";
 import { DateField } from "@/components/ui/DateField";
 import { useUrlSearchTerm } from "@/hooks/useUrlSearchTerm";
-import type { Product, Customer, Supplier, Settings, Safe } from "@/types";
+import type { Product, Customer, Supplier, Settings, Safe, PriceTier } from "@/types";
 import {
   AlertTriangle,
   ClipboardList,
@@ -108,6 +110,7 @@ import {
   Plus,
   ReceiptText,
   ShoppingCart,
+  Tags,
   X,
 } from "lucide-react";
 
@@ -123,6 +126,8 @@ interface CartItem {
   total: number;
   /** Cost snapshot from DB when editing; undefined for new cart lines */
   unit_cost?: number | null;
+  /** Retail unit price before tier markdown (for invoice print) */
+  list_unit_price?: number | null;
 }
 
 function cartLineUnitCost(item: CartItem): number {
@@ -226,6 +231,8 @@ export default function POSPage({
 } = {}) {
   const router = useRouter();
   const [mode, setMode] = useState<PosMode>("sale");
+  const modeRef = useRef<PosMode>(mode);
+  modeRef.current = mode;
   const [products, setProducts] = useState<Product[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -282,6 +289,7 @@ export default function POSPage({
     validUntil: "",
     expectedDate: "",
     purchasePriceBasis: "buy" as "buy" | "sell",
+    selectedTierId: null as string | null,
   });
 
   const [activeProductIndex, setActiveProductIndex] = useState<number>(0);
@@ -291,9 +299,16 @@ export default function POSPage({
   );
   const [settings, setSettings] = useState<Settings | null>(null);
   const [tierPricing, setTierPricing] = useState<TierPricingContext>({});
+  const [priceTiers, setPriceTiers] = useState<PriceTier[]>([]);
+  /** Active sell-side price tier for this invoice (null = retail / default). */
+  const [selectedTierId, setSelectedTierId] = useState<string | null>(null);
+  const selectedTierIdRef = useRef<string | null>(null);
+  selectedTierIdRef.current = selectedTierId;
   const [heldCarts, setHeldCarts] = useState<HeldCartSnapshot[]>([]);
   const [showHeldPanel, setShowHeldPanel] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showTierMenu, setShowTierMenu] = useState(false);
+  const tierMenuRef = useRef<HTMLDivElement>(null);
   const { profile, canEditPrices } = useAuth();
   const subject = profileSubject(profile);
   const canPurchase = canAccess(subject, "purchases");
@@ -306,6 +321,10 @@ export default function POSPage({
   const isEditing = !!(editingInvoiceId || editingDocId);
   const posBase = embedded ? "/m/pos" : "/pos";
   const posUrl = (m: PosMode = mode) => modeToUrl(m, posBase);
+  const selectedTierName =
+    selectedTierId == null
+      ? null
+      : priceTiers.find((t) => t.id === selectedTierId)?.name || null;
 
   draftSnapRef.current = {
     userId: profile?.id,
@@ -324,6 +343,7 @@ export default function POSPage({
     validUntil,
     expectedDate,
     purchasePriceBasis,
+    selectedTierId,
   };
 
   function saveDraftFromSnap(
@@ -345,6 +365,7 @@ export default function POSPage({
       validUntil: snap.validUntil,
       expectedDate: snap.expectedDate,
       purchasePriceBasis: snap.purchasePriceBasis,
+      priceTierId: snap.selectedTierId,
     });
   }
 
@@ -401,12 +422,42 @@ export default function POSPage({
     setValidUntil(draft.validUntil || "");
     setExpectedDate(draft.expectedDate || "");
     if (draft.purchasePriceBasis) setPurchasePriceBasis(draft.purchasePriceBasis);
+    if (draft.priceTierId !== undefined) {
+      setSelectedTierId(draft.priceTierId || null);
+    } else if (draft.customerId) {
+      const c = customers.find((x) => x.id === draft.customerId);
+      setSelectedTierId(c?.price_tier_id || null);
+    } else {
+      setSelectedTierId(null);
+    }
     return true;
   }
 
   useEffect(() => {
+    if (isPurchaseSide) setShowTierMenu(false);
+  }, [isPurchaseSide]);
+
+  useEffect(() => {
     setHeldCarts(loadHeldCarts(profile?.id, mode));
   }, [profile?.id, mode]);
+
+  useEffect(() => {
+    if (!showTierMenu) return;
+    function onDocClick(e: MouseEvent) {
+      if (!tierMenuRef.current?.contains(e.target as Node)) {
+        setShowTierMenu(false);
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowTierMenu(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [showTierMenu]);
 
   useEffect(() => {
     async function boot() {
@@ -417,6 +468,7 @@ export default function POSPage({
         fetchSettings(),
         fetchSafes(),
         fetchTierPrices(),
+        fetchPriceTiers(),
       ]);
       searchRef.current?.focus();
 
@@ -495,6 +547,7 @@ export default function POSPage({
     validUntil,
     expectedDate,
     purchasePriceBasis,
+    selectedTierId,
     isEditing,
   ]);
 
@@ -650,15 +703,33 @@ export default function POSPage({
       local: async () => {
         const snap = await getSnapshot();
         if (!snap?.customers?.length) return null;
+        const tierById = new Map(
+          (snap.tierPricing?.tiers || []).map((t) => [t.id, t])
+        );
         return snap.customers
           .filter((c) => c.is_active !== false)
-          .map((c) => ({
-            id: c.id,
-            name: c.name,
-            phone: c.phone,
-            balance: c.balance,
-            price_tier_id: c.price_tier_id ?? null,
-          })) as typeof customers;
+          .map((c) => {
+            const tierId = c.price_tier_id ?? null;
+            const nested =
+              c.price_tier ??
+              (tierId ? tierById.get(tierId) ?? null : null);
+            return {
+              id: c.id,
+              name: c.name,
+              phone: c.phone,
+              balance: c.balance,
+              price_tier_id: tierId,
+              price_tier: nested
+                ? {
+                    id: nested.id,
+                    name: nested.name,
+                    is_default: nested.is_default,
+                    sort_order: 0,
+                    created_at: "",
+                  }
+                : null,
+            };
+          }) as typeof customers;
       },
       network: async () => {
         const { data, error } = await withTimeout(
@@ -687,28 +758,95 @@ export default function POSPage({
         return tierPricingFromSnapshot(snap);
       },
       network: async () => loadTierPricingContext(supabase),
-      apply: (data) => setTierPricing(data),
+      apply: (data) => {
+        setTierPricing(data);
+        // Re-price if a tier was already selected before context arrived
+        const tierId = selectedTierIdRef.current;
+        if (tierId && !isPurchaseSideMode(modeRef.current)) {
+          setCart((prev) =>
+            prev.map((item) => {
+              const unitPrice = resolveSellPrice(item.product, tierId, data);
+              return {
+                ...item,
+                unit_price: unitPrice,
+                list_unit_price: snapshotListUnitPrice(
+                  item.product.sell_price,
+                  unitPrice
+                ),
+                total: unitPrice * item.quantity - item.discount,
+              };
+            })
+          );
+        }
+      },
     });
   }
 
-  function applyCustomerPricing(customer: Customer | null) {
-    if (mode !== "sale") return;
-    const tierId = customer?.price_tier_id ?? null;
+  async function fetchPriceTiers() {
+    await readLocalThenNetwork({
+      offline: !isBrowserOnline(),
+      timeoutMs: 5000,
+      local: async () => {
+        const snap = await getSnapshot();
+        const tiers = snap?.tierPricing?.tiers;
+        if (!tiers?.length) return null;
+        return tiers.map((t) => ({
+          id: t.id,
+          name: t.name,
+          is_default: t.is_default,
+          sort_order: 0,
+          created_at: "",
+        })) as PriceTier[];
+      },
+      network: async () => listPriceTiers(supabase),
+      apply: (data) => setPriceTiers(data),
+    });
+  }
+
+  function tierIdFromCustomer(customer: Customer | null): string | null {
+    const id = customer?.price_tier_id ?? null;
+    if (!id) return null;
+    if (customer?.price_tier?.is_default) return null;
+    const meta = priceTiers.find((t) => t.id === id);
+    if (meta?.is_default) return null;
+    return id;
+  }
+
+  function applyTierToCart(
+    tierId: string | null,
+    pricing: TierPricingContext = tierPricing
+  ) {
+    if (isPurchaseSide) return;
     setCart((prev) =>
       prev.map((item) => {
-        const unitPrice = resolveSellPrice(item.product, tierId, tierPricing);
+        const unitPrice = resolveSellPrice(item.product, tierId, pricing);
         return {
           ...item,
           unit_price: unitPrice,
+          list_unit_price: snapshotListUnitPrice(
+            item.product.sell_price,
+            unitPrice
+          ),
           total: unitPrice * item.quantity - item.discount,
         };
       })
     );
   }
 
+  function selectPriceTier(tierId: string | null) {
+    setSelectedTierId(tierId);
+    applyTierToCart(tierId);
+  }
+
   function selectCustomer(customer: Customer | null) {
     setSelectedCustomer(customer);
-    applyCustomerPricing(customer);
+    // Tier is invoice-level: only auto-fill when the customer has an assigned tier.
+    // Clearing the customer (or picking a retail customer) keeps the current invoice tier.
+    if (!customer) return;
+    const tierId = tierIdFromCustomer(customer);
+    if (!tierId) return;
+    setSelectedTierId(tierId);
+    applyTierToCart(tierId);
   }
 
   async function fetchSuppliers() {
@@ -851,9 +989,20 @@ export default function POSPage({
           total: Number(line.total),
           unit_cost:
             line.unit_cost != null ? Number(line.unit_cost) : null,
+          list_unit_price:
+            (line as { list_unit_price?: number | null }).list_unit_price !=
+            null
+              ? Number(
+                  (line as { list_unit_price?: number | null }).list_unit_price
+                )
+              : snapshotListUnitPrice(
+                  Number((line.product as Product)?.sell_price) || 0,
+                  Number(line.unit_price)
+                ),
         })) || []
       );
       setSelectedCustomer((inv.customer as Customer) || null);
+      setSelectedTierId(tierIdFromCustomer((inv.customer as Customer) || null));
       setSelectedSupplier(null);
       setPaymentMethod(inv.payment_method === "credit" ? "credit" : "cash");
       setPaidAmount(Number(inv.paid_amount) || 0);
@@ -915,6 +1064,7 @@ export default function POSPage({
       );
       setSelectedSupplier((inv.supplier as Supplier) || null);
       setSelectedCustomer(null);
+      setSelectedTierId(null);
       setPaymentMethod(inv.payment_method === "credit" ? "credit" : "cash");
       setPaidAmount(Number(inv.paid_amount) || 0);
       const linkedSafeId = await resolveInvoiceSafeId(
@@ -974,9 +1124,20 @@ export default function POSPage({
           unit_price: Number(line.unit_price),
           discount: Number(line.discount) || 0,
           total: Number(line.total),
+          list_unit_price:
+            (line as { list_unit_price?: number | null }).list_unit_price !=
+            null
+              ? Number(
+                  (line as { list_unit_price?: number | null }).list_unit_price
+                )
+              : snapshotListUnitPrice(
+                  Number((line.product as Product)?.sell_price) || 0,
+                  Number(line.unit_price)
+                ),
         })) || []
       );
       setSelectedCustomer((doc.customer as Customer) || null);
+      setSelectedTierId(tierIdFromCustomer((doc.customer as Customer) || null));
       setSelectedSupplier(null);
       setDiscount(Number(doc.discount_amount) || 0);
       setDiscountType("amount");
@@ -1030,6 +1191,7 @@ export default function POSPage({
       );
       setSelectedSupplier((doc.supplier as Supplier) || null);
       setSelectedCustomer(null);
+      setSelectedTierId(null);
       setDiscount(Number(doc.discount_amount) || 0);
       setDiscountType("amount");
       setExpectedDate(doc.expected_date || "");
@@ -1190,6 +1352,9 @@ export default function POSPage({
           }
 
           const total = Math.max(0, qty * unitPrice - discount);
+          const listFromSource = (
+            line as { list_unit_price?: number | null }
+          ).list_unit_price;
           return {
             product,
             quantity: qty,
@@ -1197,6 +1362,11 @@ export default function POSPage({
             discount,
             total,
             unit_cost: keepPrices ? line.unit_cost : undefined,
+            list_unit_price: sellSide
+              ? keepPrices && listFromSource != null
+                ? Number(listFromSource)
+                : snapshotListUnitPrice(product.sell_price, unitPrice)
+              : null,
           };
         });
 
@@ -1220,12 +1390,15 @@ export default function POSPage({
       if (keepParty && sellSide) {
         setSelectedCustomer(customer);
         setSelectedSupplier(null);
+        setSelectedTierId(tierIdFromCustomer(customer));
       } else if (keepParty && !sellSide) {
         setSelectedSupplier(supplier);
         setSelectedCustomer(null);
+        setSelectedTierId(null);
       } else {
         setSelectedCustomer(null);
         setSelectedSupplier(null);
+        setSelectedTierId(null);
       }
 
       if (asMode === "sale" || asMode === "purchase") {
@@ -1293,6 +1466,7 @@ export default function POSPage({
     setCart([]);
     setSelectedCustomer(null);
     setSelectedSupplier(null);
+    setSelectedTierId(null);
     setPaidAmount(0);
     setDiscount(0);
     setNotes("");
@@ -1312,14 +1486,11 @@ export default function POSPage({
         ? product.sell_price
         : product.buy_price;
     }
-    if (mode === "sale") {
-      return resolveSellPrice(
-        product,
-        selectedCustomer?.price_tier_id ?? null,
-        tierPricing
-      );
-    }
-    return product.sell_price;
+    return resolveSellPrice(
+      product,
+      selectedTierId,
+      tierPricing
+    );
   }
 
   function changePurchaseBasis(next: "buy" | "sell") {
@@ -1414,6 +1585,9 @@ export default function POSPage({
           discount: 0,
           total: unitPrice * addQty,
           unit_cost: Number(product.buy_price) || 0,
+          list_unit_price: isPurchaseSide
+            ? null
+            : snapshotListUnitPrice(product.sell_price, unitPrice),
         },
       ]);
     }
@@ -1429,6 +1603,16 @@ export default function POSPage({
         if (i !== index) return item;
         const updated = { ...item, ...updates };
         updated.total = updated.quantity * updated.unit_price - updated.discount;
+        if (
+          !isPurchaseSide &&
+          updates.unit_price != null &&
+          updates.list_unit_price === undefined
+        ) {
+          updated.list_unit_price = snapshotListUnitPrice(
+            item.product.sell_price,
+            updated.unit_price
+          );
+        }
         return updated;
       })
     );
@@ -1454,6 +1638,7 @@ export default function POSPage({
     setCart([]);
     setSelectedCustomer(null);
     setSelectedSupplier(null);
+    setSelectedTierId(null);
     setPaidAmount(0);
     setPaymentMethod("cash");
     setSelectedSafeId(pickDefaultSafeId(safes, "cash"));
@@ -1553,11 +1738,11 @@ export default function POSPage({
     }
 
     setCart(lines);
-    setSelectedCustomer(
-      held.customerId
-        ? customers.find((c) => c.id === held.customerId) || null
-        : null
-    );
+    const heldCustomer = held.customerId
+      ? customers.find((c) => c.id === held.customerId) || null
+      : null;
+    setSelectedCustomer(heldCustomer);
+    setSelectedTierId(tierIdFromCustomer(heldCustomer));
     setSelectedSupplier(
       held.supplierId
         ? suppliers.find((s) => s.id === held.supplierId) || null
@@ -2055,6 +2240,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))
         );
         if (itemsError) throw new Error(itemsError.message);
@@ -2084,6 +2270,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))
         );
         if (itemsError) throw new Error(itemsError.message);
@@ -2133,6 +2320,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))
         );
         if (itemsError) throw new Error(itemsError.message);
@@ -2165,6 +2353,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))
         );
         if (itemsError) throw new Error(itemsError.message);
@@ -2185,6 +2374,7 @@ export default function POSPage({
     setCart([]);
     setSelectedCustomer(null);
     setSelectedSupplier(null);
+    setSelectedTierId(null);
     setPaidAmount(0);
     setPaymentMethod("cash");
     setSelectedSafeId(pickDefaultSafeId(safes, "cash"));
@@ -2435,6 +2625,100 @@ export default function POSPage({
               <ShoppingCart className="h-3.5 w-3.5 max-lg:h-4 max-lg:w-4" />
               فاتورة مشتريات
             </button>
+              </>
+            )}
+            <div className="relative" ref={tierMenuRef}>
+              <button
+                type="button"
+                title={
+                  selectedTierName
+                    ? `شريحة الخصم: ${selectedTierName}`
+                    : "شريحة الخصم على الفاتورة"
+                }
+                aria-label="شريحة الخصم على الفاتورة"
+                aria-expanded={showTierMenu}
+                disabled={isPurchaseSide}
+                onClick={() => {
+                  if (isPurchaseSide) return;
+                  setShowTierMenu((v) => !v);
+                }}
+                className={`relative inline-flex min-h-9 items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-colors max-lg:min-h-11 max-lg:px-3 ${
+                  isPurchaseSide
+                    ? "cursor-not-allowed border-gray-100 text-gray-300"
+                    : selectedTierId
+                      ? "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                      : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                <Tags className="h-4 w-4 shrink-0" />
+                <span>شريحة</span>
+                {selectedTierId && !isPurchaseSide ? (
+                  <span className="absolute -left-0.5 -top-0.5 h-2 w-2 rounded-full bg-blue-600" />
+                ) : null}
+              </button>
+              {showTierMenu && !isPurchaseSide && (
+                <div className="absolute left-0 top-full z-30 mt-1 w-52 overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg">
+                  <p className="border-b border-gray-100 px-3 py-1.5 text-[11px] font-semibold text-gray-500">
+                    شريحة الخصم
+                  </p>
+                  {priceTiers.some((t) => !t.is_default) ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          selectPriceTier(null);
+                          setShowTierMenu(false);
+                        }}
+                        className={`flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-blue-50 ${
+                          !selectedTierId
+                            ? "font-bold text-blue-700"
+                            : "text-gray-700"
+                        }`}
+                      >
+                        <span>تجزئة</span>
+                        {!selectedTierId ? (
+                          <span className="text-[10px] text-blue-600">✓</span>
+                        ) : null}
+                      </button>
+                      {priceTiers
+                        .filter((t) => !t.is_default)
+                        .map((t) => (
+                          <button
+                            key={t.id}
+                            type="button"
+                            onClick={() => {
+                              selectPriceTier(t.id);
+                              setShowTierMenu(false);
+                            }}
+                            className={`flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-blue-50 ${
+                              selectedTierId === t.id
+                                ? "font-bold text-blue-700"
+                                : "text-gray-700"
+                            }`}
+                          >
+                            <span>{t.name}</span>
+                            {selectedTierId === t.id ? (
+                              <span className="text-[10px] text-blue-600">✓</span>
+                            ) : null}
+                          </button>
+                        ))}
+                    </>
+                  ) : (
+                    <div className="px-3 py-2 text-xs text-amber-700">
+                      لا توجد شرائح —{" "}
+                      <Link
+                        href="/settings?tab=tiers"
+                        className="font-semibold underline"
+                        onClick={() => setShowTierMenu(false)}
+                      >
+                        أنشئ من الإعدادات
+                      </Link>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            {canPurchase && (
             <button
               type="button"
               onClick={() => switchMode("purchase_order")}
@@ -2447,7 +2731,6 @@ export default function POSPage({
               <ClipboardList className="h-3.5 w-3.5 max-lg:h-4 max-lg:w-4" />
               طلب مشتريات
             </button>
-              </>
             )}
           </div>
         )}
@@ -2612,13 +2895,11 @@ export default function POSPage({
                   ? purchasePriceBasis === "sell"
                     ? product.sell_price
                     : product.buy_price
-                  : mode === "sale"
-                    ? resolveSellPrice(
-                        product,
-                        selectedCustomer?.price_tier_id ?? null,
-                        tierPricing
-                      )
-                    : product.sell_price;
+                  : resolveSellPrice(
+                      product,
+                      selectedTierId,
+                      tierPricing
+                    );
                 const pack = Math.max(1, Number(product.pack_size) || 1);
                 const canAdd = allowsOutOfStock || !isOutOfStock;
                 return (
@@ -3261,6 +3542,13 @@ export default function POSPage({
                           {formatCurrency(item.unit_price)}
                         </span>
                       )}
+                      {item.list_unit_price != null &&
+                        item.list_unit_price > item.unit_price + 0.001 && (
+                          <span className="basis-full text-[10px] text-emerald-700">
+                            قبل {formatCurrency(item.list_unit_price)} → بعد{" "}
+                            {formatCurrency(item.unit_price)}
+                          </span>
+                        )}
                     </div>
 
                     <div className="shrink-0 text-left text-sm font-bold tabular-nums text-blue-700">
@@ -3656,6 +3944,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))}
           partyName={selectedCustomer?.name}
           partyPhone={selectedCustomer?.phone}
@@ -3703,6 +3992,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))}
           partyName={selectedCustomer?.name}
           partyPhone={selectedCustomer?.phone}
@@ -3730,6 +4020,7 @@ export default function POSPage({
             unit_price: item.unit_price,
             discount: item.discount,
             total: item.total,
+            list_unit_price: item.list_unit_price ?? null,
           }))}
           partyName={selectedSupplier?.name}
           partyPhone={selectedSupplier?.phone}
