@@ -76,6 +76,36 @@ export async function sendTelegramChatMessage(opts: {
       ok: boolean;
       description?: string;
     };
+
+    // If reply target is missing/stale, retry once without reply_to.
+    if (
+      !data.ok &&
+      i === 0 &&
+      opts.replyToMessageId &&
+      (data.description || "").toLowerCase().includes("message to be replied")
+    ) {
+      const retryBody = {
+        chat_id: opts.chatId,
+        text: parts[i],
+        disable_web_page_preview: true,
+      };
+      const retryRes = await fetch(
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(retryBody),
+        }
+      );
+      const retryData = (await retryRes.json()) as {
+        ok: boolean;
+        description?: string;
+      };
+      last = { ok: retryData.ok, description: retryData.description };
+      if (!retryData.ok) return last;
+      continue;
+    }
+
     last = { ok: data.ok, description: data.description };
     if (!data.ok) return last;
   }
