@@ -128,7 +128,7 @@ export async function executeBusinessTool(
   const args = (rawArgs && typeof rawArgs === "object"
     ? rawArgs
     : {}) as ToolArgs;
-  const supabase = createServiceClient();
+  const supabase = await createServiceClient();
 
   try {
     switch (name) {

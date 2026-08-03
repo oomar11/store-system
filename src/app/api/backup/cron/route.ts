@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const client = createServiceClient();
+    const client = await createServiceClient();
     const payload = await exportBackup(client);
     const json = backupToJson(payload);
     const filename = backupFilename(payload);

@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await parseBody(request);
-  const service = createServiceClient();
+  const service = await createServiceClient();
 
   const { data: openShift } = await service
     .from("shifts")
@@ -127,7 +127,7 @@ export async function POST(request: NextRequest) {
   after(async () => {
     await new Promise((r) => setTimeout(r, GRACE_MS));
     try {
-      const client = createServiceClient();
+      const client = await createServiceClient();
       const { data: still } = await client
         .from("shifts")
         .select("id, status, abandon_requested_at")

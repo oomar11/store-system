@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const client = createServiceClient();
+    const client = await createServiceClient();
 
     // 1) Backup first, send to Telegram — refuse reset if send fails
     const payload = await exportBackup(client);

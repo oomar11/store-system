@@ -22,7 +22,7 @@ export async function loadGeminiApiKey(): Promise<{
   source: "database" | "env";
 } | null> {
   try {
-    const client = createServiceClient();
+    const client = await createServiceClient();
     const { data } = await client
       .from("telegram_config")
       .select("gemini_api_key")
@@ -64,7 +64,7 @@ export async function saveGeminiApiKey(opts: {
     return { ok: false, error: "شكل مفتاح Gemini غير معروف" };
   }
 
-  const client = createServiceClient();
+  const client = await createServiceClient();
   const { error } = await client.from("telegram_config").upsert({
     id: CONFIG_ID,
     gemini_api_key: key,
@@ -77,7 +77,7 @@ export async function saveGeminiApiKey(opts: {
 }
 
 export async function clearGeminiApiKey(updated_by?: string | null) {
-  const client = createServiceClient();
+  const client = await createServiceClient();
   const { error } = await client
     .from("telegram_config")
     .update({
