@@ -11,11 +11,13 @@ function round2(n: number): number {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
 
-/** Category name → buy discount % from sell (قطاعات = 20%, else 10%). */
+/** Category name → buy discount % from sell (قطاعات سيتي = 20%, كورين/الباقي = 10%). */
 export function buyDiscountPercentForCategory(
   categoryName: string | null | undefined
 ): number {
   const name = (categoryName || "").trim();
+  // كورين stays at the default 10% trade discount
+  if (/كورين/.test(name)) return DEFAULT_BUY_DISCOUNT_FROM_SELL_PERCENT;
   if (/قطاع/.test(name)) return SECTORS_BUY_DISCOUNT_FROM_SELL_PERCENT;
   return DEFAULT_BUY_DISCOUNT_FROM_SELL_PERCENT;
 }
