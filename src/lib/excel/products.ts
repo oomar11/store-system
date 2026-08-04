@@ -3,6 +3,7 @@ import type { Category, Product } from "@/types";
 import { PRODUCT_COLUMNS, getEntityLabel } from "./schemas";
 import { downloadTemplate, exportRows } from "./download";
 import { cellToString, parseBoolean, parseNumber } from "./parse";
+import { buyDiscountPercentForCategory, estimatedBuyPriceFromSell } from "@/lib/product-cost";
 
 export type RowAction = "create" | "update" | "skip" | "error";
 
@@ -45,7 +46,7 @@ export function productExampleRow(): Record<string, unknown> {
     الاسم: "صنف تجريبي",
     القسم: "عام",
     الوحدة: "قطعة",
-    "سعر الشراء": 10,
+    "سعر الشراء": estimatedBuyPriceFromSell(15),
     "سعر البيع": 15,
     الكمية: 100,
     "الرصيد الافتتاحي": 100,
@@ -130,10 +131,52 @@ export function buildProductPreview(
     if (minQty != null && minQty < 0) errors.push("الحد الأدنى غير صالح");
 
     const existingProduct = sku ? bySku.get(skuKey) : undefined;
-    let action: RowAction = errors.length ? "error" : existingProduct ? "update" : "create";
+    const action: RowAction = errors.length
+      ? "error"
+      : existingProduct
+        ? "update"
+        : "create";
 
     if (action === "update" && !options.updateQuantities && qty != null) {
       warnings.push("الكمية في الملف لن تُحدَّث (فعّل تحديث الكميات)");
+    }
+
+    const resolvedSell = sell ?? existingProduct?.sell_price ?? 0;
+    let resolvedBuy = buy ?? existingProduct?.buy_price ?? 0;
+    const buyDiscount = buyDiscountPercentForCategory(categoryName);
+
+    if (buy != null && buy > 0 && Math.abs(buy - resolvedSell) >= 0.005) {
+      resolvedBuy = buy;
+    } else if (
+      buy != null &&
+      resolvedSell > 0 &&
+      (buy <= 0 || Math.abs(buy - resolvedSell) < 0.005)
+    ) {
+      resolvedBuy = estimatedBuyPriceFromSell(resolvedSell, buyDiscount);
+      warnings.push(
+        buy <= 0
+          ? `سعر الشراء فارغ — تُسعَّر التكلفة بخصم ${buyDiscount}٪ من البيع (${resolvedBuy})`
+          : `سعر الشراء = البيع — تُسعَّر التكلفة بخصم ${buyDiscount}٪ من البيع (${resolvedBuy})`
+      );
+    } else if (buy == null && !existingProduct && resolvedSell > 0) {
+      resolvedBuy = estimatedBuyPriceFromSell(resolvedSell, buyDiscount);
+      warnings.push(
+        `سعر الشراء فارغ — تُسعَّر التكلفة بخصم ${buyDiscount}٪ من البيع (${resolvedBuy})`
+      );
+    } else if (buy == null && existingProduct) {
+      const existingBuy = Number(existingProduct.buy_price) || 0;
+      const existingSell = Number(existingProduct.sell_price) || 0;
+      if (
+        resolvedSell > 0 &&
+        (existingBuy <= 0 || Math.abs(existingBuy - existingSell) < 0.005)
+      ) {
+        resolvedBuy = estimatedBuyPriceFromSell(resolvedSell, buyDiscount);
+        warnings.push(
+          `تكلفة تقديرية بخصم ${buyDiscount}٪ من البيع (${resolvedBuy}) — كان الشراء = البيع أو صفر`
+        );
+      } else {
+        resolvedBuy = existingBuy;
+      }
     }
 
     const payload: ProductImportPayload | null =
@@ -143,8 +186,8 @@ export function buildProductPreview(
             name,
             category_name: categoryName,
             unit: cellToString(row.unit) || "قطعة",
-            buy_price: buy ?? existingProduct?.buy_price ?? 0,
-            sell_price: sell ?? existingProduct?.sell_price ?? 0,
+            buy_price: resolvedBuy,
+            sell_price: resolvedSell,
             quantity: qty ?? existingProduct?.quantity ?? 0,
             opening_quantity:
               opening ?? existingProduct?.opening_quantity ?? qty ?? 0,

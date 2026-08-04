@@ -35,6 +35,7 @@ import {
   insertInvoiceItems,
   purchaseNetUnitCosts,
 } from "@/lib/invoice-cost";
+import { catalogUnitCostFromProduct } from "@/lib/product-cost";
 import {
   pickDefaultSafeId,
   syncInvoiceSafePayment,
@@ -134,7 +135,13 @@ function cartLineUnitCost(item: CartItem): number {
   if (item.unit_cost != null && !Number.isNaN(Number(item.unit_cost))) {
     return Number(item.unit_cost);
   }
-  return Number(item.product.buy_price) || 0;
+  if (item.product.category?.name) {
+    const fromSell = catalogUnitCostFromProduct(item.product);
+    if (fromSell > 0) return fromSell;
+  }
+  const buy = Number(item.product.buy_price) || 0;
+  if (buy > 0) return buy;
+  return catalogUnitCostFromProduct(item.product);
 }
 
 type SaleLossAnalysis = {
@@ -684,7 +691,7 @@ export default function POSPage({
           (async () =>
             supabase
               .from("products")
-              .select("*")
+              .select("*, category:categories(id, name)")
               .eq("is_active", true)
               .order("name"))(),
           5000
@@ -1584,7 +1591,13 @@ export default function POSPage({
           unit_price: unitPrice,
           discount: 0,
           total: unitPrice * addQty,
-          unit_cost: Number(product.buy_price) || 0,
+          unit_cost: (() => {
+            if (product.category?.name) {
+              const fromSell = catalogUnitCostFromProduct(product);
+              if (fromSell > 0) return fromSell;
+            }
+            return Number(product.buy_price) || 0;
+          })(),
           list_unit_price: isPurchaseSide
             ? null
             : snapshotListUnitPrice(product.sell_price, unitPrice),

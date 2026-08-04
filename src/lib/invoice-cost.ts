@@ -1,5 +1,6 @@
 import type { Product } from "@/types";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { catalogUnitCostFromProduct } from "@/lib/product-cost";
 
 /** Resolve unit cost for a line: prefer saved snapshot, else current buy price. */
 export function resolveUnitCost(
@@ -25,7 +26,9 @@ export function lineCostTotal(
 }
 
 type CostCartItem = {
-  product: Pick<Product, "id" | "buy_price">;
+  product: Pick<Product, "id" | "buy_price" | "sell_price"> & {
+    category?: { name?: string | null } | null;
+  };
   quantity: number;
   unit_price: number;
   discount?: number;
@@ -98,7 +101,8 @@ export type InvoiceItemInsert = {
  * - Purchase lines use the NET unit cost (line total / qty), so any line or
  *   distributed invoice discount is reflected in the stored cost.
  * - Existing sale lines keep their unit_cost snapshot when set.
- * - New sale lines (or legacy without snapshot) capture product.buy_price now.
+ * - New sale lines capture catalog cost from products.sell_price (10%/20%),
+ *   never from the invoice unit price.
  */
 export function mapCartToInvoiceItems(
   invoiceId: string,
@@ -130,7 +134,19 @@ export function mapCartToInvoiceItems(
     } else if (item.unit_cost != null && !Number.isNaN(Number(item.unit_cost))) {
       unitCost = Number(item.unit_cost);
     } else {
-      unitCost = Number(item.product.buy_price) || 0;
+      const hasCategory = !!(
+        item.product.category?.name ||
+        (item.product as { category_name?: string }).category_name
+      );
+      if (hasCategory) {
+        unitCost = catalogUnitCostFromProduct(item.product);
+      } else {
+        // buy_price is kept synced from products.sell_price in catalog
+        unitCost = Number(item.product.buy_price) || 0;
+        if (!(unitCost > 0)) {
+          unitCost = catalogUnitCostFromProduct(item.product);
+        }
+      }
     }
 
     return {
