@@ -215,6 +215,7 @@ export interface JournalEntry {
   entry_number: string;
   date: string;
   description: string;
+  notes?: string | null;
   is_posted: boolean;
   created_by: string;
   created_at: string;
@@ -248,6 +249,7 @@ export interface SafeTransaction {
   type: "deposit" | "withdrawal" | "transfer";
   amount: number;
   description: string;
+  notes?: string | null;
   reference_type?: string;
   reference_id?: string;
   related_safe_id?: string;

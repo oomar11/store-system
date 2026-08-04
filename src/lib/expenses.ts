@@ -11,6 +11,7 @@ export type ExpenseListItem = {
   entry_number: string;
   date: string;
   description: string;
+  notes?: string | null;
   amount: number;
   expense_account_id: string;
   expense_account_code: string;
@@ -27,6 +28,7 @@ export type CreateExpenseInput = {
   date: string;
   amount: number;
   description: string;
+  notes?: string | null;
   expenseAccountId: string;
   safeId: string;
   createdBy?: string | null;
@@ -219,11 +221,13 @@ export async function createExpense(
   const description =
     input.description.trim() ||
     `مصروف: ${expenseAccount.name}`;
+  const notes = input.notes?.trim() || null;
 
   const entryInsert: Record<string, unknown> = {
     entry_number,
     date: input.date,
     description,
+    notes,
     is_posted: true,
     created_by: input.createdBy || null,
   };
@@ -280,6 +284,7 @@ export async function createExpense(
       type: "withdrawal",
       amount,
       description,
+      notes,
       referenceType: EXPENSE_REFERENCE_TYPE,
       referenceId: entry.id,
       createdAt: input.createdAt || null,
@@ -320,6 +325,7 @@ export async function createExpense(
       entry_number: entry.entry_number,
       date: entry.date,
       description,
+      notes,
       amount,
       expense_account_id: expenseAccount.id,
       expense_account_code: expenseAccount.code,
@@ -430,6 +436,7 @@ export async function deleteExpense(
       before: {
         entry_number: entry.entry_number,
         description: entry.description,
+      notes: entry.notes,
         amount,
         safe_id: safe.id,
       },
@@ -450,6 +457,7 @@ export async function updateExpense(
     | "entry_number"
     | "amount"
     | "description"
+    | "notes"
     | "safe_id"
     | "expense_account_id"
   >
@@ -458,6 +466,7 @@ export async function updateExpense(
     entry_number: entryId,
     amount: 0,
     description: "",
+    notes: null,
     safe_id: "",
     expense_account_id: "",
   };
@@ -482,6 +491,7 @@ export async function updateExpense(
       entry_number: old.entry_number,
       amount: old.amount,
       description: old.description,
+      notes: old.notes,
       safe_id: old.safe_id,
       expense_account_id: old.expense_account_id,
     },
@@ -489,6 +499,7 @@ export async function updateExpense(
       entry_number: created.data.entry_number,
       amount: created.data.amount,
       description: created.data.description,
+      notes: created.data.notes,
       safe_id: created.data.safe_id,
       expense_account_id: created.data.expense_account_id,
     },
@@ -627,6 +638,7 @@ export async function listExpenses(
             id: "",
             safe_id: "",
             amount: (entry.lines || []).find((l) => Number(l.debit) > 0)?.debit || 0,
+            notes: entry.notes || null,
             created_at: entry.created_at,
           } as SafeTransaction & { safe?: Safe }),
         entry,
@@ -678,6 +690,7 @@ function mapExpenseRow(
     entry_number: entry.entry_number,
     date: entry.date,
     description: entry.description,
+    notes: (entry.notes as string | null) || (tx.notes as string | null) || null,
     amount: Number(tx.amount) || Number(expenseLine?.debit) || 0,
     expense_account_id: expenseLine?.account_id || account?.id || "",
     expense_account_code: account?.code || "",

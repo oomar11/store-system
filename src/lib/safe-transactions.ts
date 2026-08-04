@@ -8,10 +8,39 @@ export type ApplySafeMovementParams = {
   type: SafeMovementType;
   amount: number;
   description: string;
+  notes?: string | null;
   referenceType?: string;
   referenceId?: string;
   createdAt?: string | null;
 };
+
+async function attachNotesToLatestMovement(
+  supabase: SupabaseClient,
+  params: {
+    safeId: string;
+    type: SafeMovementType | "transfer";
+    amount: number;
+    referenceType?: string;
+    referenceId?: string;
+    notes?: string | null;
+  }
+) {
+  const trimmed = params.notes?.trim();
+  if (!trimmed) return;
+  let q = supabase
+    .from("safe_transactions")
+    .select("id")
+    .eq("safe_id", params.safeId)
+    .eq("type", params.type)
+    .eq("amount", params.amount)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (params.referenceType) q = q.eq("reference_type", params.referenceType);
+  if (params.referenceId) q = q.eq("reference_id", params.referenceId);
+  const { data } = await q.maybeSingle();
+  if (!data?.id) return;
+  await supabase.from("safe_transactions").update({ notes: trimmed }).eq("id", data.id);
+}
 
 /** Apply a single deposit/withdrawal to a safe and record the ledger row (atomic RPC). */
 export async function applySafeMovement(
@@ -34,6 +63,15 @@ export async function applySafeMovement(
   if (error) {
     throw new Error(error.message || "تعذر تحديث رصيد الخزنة");
   }
+
+  await attachNotesToLatestMovement(supabase, {
+    safeId: params.safeId,
+    type: params.type,
+    amount,
+    referenceType: params.referenceType,
+    referenceId: params.referenceId,
+    notes: params.notes,
+  });
 }
 
 export type TransferBetweenSafesParams = {
@@ -41,6 +79,7 @@ export type TransferBetweenSafesParams = {
   toSafeId: string;
   amount: number;
   description?: string;
+  notes?: string | null;
 };
 
 export async function transferBetweenSafes(
@@ -59,6 +98,29 @@ export async function transferBetweenSafes(
 
   if (error) {
     throw new Error(error.message || "تعذر إتمام التحويل بين الخزائن");
+  }
+
+  const trimmed = params.notes?.trim();
+  if (trimmed) {
+    const { data: rows } = await supabase
+      .from("safe_transactions")
+      .select("id, safe_id, related_safe_id")
+      .eq("type", "transfer")
+      .eq("amount", amount)
+      .or(
+        `and(safe_id.eq.${params.fromSafeId},related_safe_id.eq.${params.toSafeId}),and(safe_id.eq.${params.toSafeId},related_safe_id.eq.${params.fromSafeId})`
+      )
+      .order("created_at", { ascending: false })
+      .limit(2);
+    if (rows?.length) {
+      await supabase
+        .from("safe_transactions")
+        .update({ notes: trimmed })
+        .in(
+          "id",
+          rows.map((r) => r.id)
+        );
+    }
   }
 }
 
@@ -216,6 +278,7 @@ export async function updateManualSafeMovement(
     type: SafeMovementType;
     amount: number;
     description: string;
+    notes?: string;
   }
 ): Promise<void> {
   const { data: old, error } = await supabase
@@ -249,6 +312,7 @@ export async function updateManualSafeMovement(
     type: input.type,
     amount: input.amount,
     description: input.description,
+    notes: input.notes,
     referenceType: "manual",
   });
 
@@ -270,6 +334,7 @@ export async function updateManualSafeMovement(
       amount: input.amount,
       safe_id: input.safeId,
       description: input.description,
+      notes: input.notes?.trim() || null,
     },
     source: "app",
   });
@@ -284,6 +349,7 @@ export async function updateSafeTransfer(
     toSafeId: string;
     amount: number;
     description?: string;
+    notes?: string;
   }
 ): Promise<void> {
   const { data: row, error } = await supabase
@@ -332,6 +398,7 @@ export async function updateSafeTransfer(
     toSafeId: input.toSafeId,
     amount: input.amount,
     description: input.description,
+    notes: input.notes,
   });
 
   await logAuditEvent(supabase, {

@@ -103,6 +103,7 @@ export type OutboxExpensePayload = {
   date: string;
   amount: number;
   description: string;
+  notes?: string | null;
   expenseAccountId: string;
   safeId: string;
   accountName?: string;

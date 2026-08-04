@@ -380,6 +380,7 @@ async function pushDomainOp(
       date: String(p.date),
       amount: Number(p.amount),
       description: String(p.description),
+      notes: (p.notes as string) || null,
       expenseAccountId: String(p.expenseAccountId),
       safeId: String(p.safeId),
       createdAt: (p.occurredAt as string) || entry.created_at,
@@ -415,6 +416,7 @@ async function pushDomainOp(
         entry_number: data.entry_number,
         date: data.date,
         description: data.description,
+        notes: data.notes || null,
         created_at: data.created_at,
         created_by: data.created_by,
       });
@@ -432,6 +434,7 @@ async function pushDomainOp(
         date: String(p.date),
         amount: Number(p.amount),
         description: String(p.description),
+        notes: (p.notes as string) || null,
         expenseAccountId: String(p.expenseAccountId),
         safeId: String(p.safeId),
         createdAt: (p.occurredAt as string) || entry.created_at,
@@ -441,6 +444,7 @@ async function pushDomainOp(
             entry_number: string;
             amount: number;
             description: string;
+            notes?: string | null;
             safe_id: string;
             expense_account_id: string;
           }

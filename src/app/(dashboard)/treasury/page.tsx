@@ -57,6 +57,7 @@ export default function TreasuryPage() {
     type: "deposit" as "deposit" | "withdrawal",
     amount: "",
     description: "",
+    notes: "",
     from_safe_id: "",
     to_safe_id: "",
   });
@@ -78,6 +79,7 @@ export default function TreasuryPage() {
   const filteredTransactions = transactions.filter((t) => {
     const matchesSearch = smartSearchMatch(searchTerm, [
       t.description,
+      t.notes,
       (t.safe as Safe | undefined)?.name,
       (t.related_safe as Safe | undefined)?.name,
     ]);
@@ -240,6 +242,7 @@ export default function TreasuryPage() {
     const type = formData.get("type") as "deposit" | "withdrawal";
     const amount = Number(formData.get("amount"));
     const description = (formData.get("description") as string) || "";
+    const notes = (formData.get("notes") as string) || "";
 
     if (!safe_id || !amount || amount <= 0) return;
 
@@ -250,6 +253,7 @@ export default function TreasuryPage() {
         type,
         amount,
         description,
+        notes,
         referenceType: "manual",
       });
     } catch (err: unknown) {
@@ -270,6 +274,7 @@ export default function TreasuryPage() {
     const to_safe_id = formData.get("to_safe_id") as string;
     const amount = Number(formData.get("amount"));
     const description = ((formData.get("description") as string) || "").trim();
+    const notes = ((formData.get("notes") as string) || "").trim();
 
     if (!from_safe_id || !to_safe_id || !amount || amount <= 0) return;
     if (from_safe_id === to_safe_id) {
@@ -284,6 +289,7 @@ export default function TreasuryPage() {
         toSafeId: to_safe_id,
         amount,
         description,
+        notes,
       });
     } catch (err: unknown) {
       toastError(err instanceof Error ? err.message : "تعذر إتمام التحويل");
@@ -310,6 +316,7 @@ export default function TreasuryPage() {
         type: "deposit",
         amount: String(t.amount),
         description: t.description || "",
+        notes: t.notes || "",
         from_safe_id: isOut ? t.safe_id : t.related_safe_id || "",
         to_safe_id: isOut ? t.related_safe_id || "" : t.safe_id,
       });
@@ -319,6 +326,7 @@ export default function TreasuryPage() {
         type: t.type as "deposit" | "withdrawal",
         amount: String(t.amount),
         description: t.description || "",
+        notes: t.notes || "",
         from_safe_id: "",
         to_safe_id: "",
       });
@@ -349,6 +357,7 @@ export default function TreasuryPage() {
           toSafeId: editForm.to_safe_id,
           amount,
           description: editForm.description,
+          notes: editForm.notes,
         });
       } else {
         if (!editForm.safe_id) throw new Error("اختر الخزنة");
@@ -358,6 +367,7 @@ export default function TreasuryPage() {
           type: editForm.type,
           amount,
           description: editForm.description,
+          notes: editForm.notes,
         });
       }
       setEditingTx(null);
@@ -803,6 +813,7 @@ export default function TreasuryPage() {
                   sortDirection={sortConfig.direction}
                   onSort={requestSort}
                 />
+                <th className="px-4 py-3 text-right text-xs font-semibold">ملاحظة</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold">بواسطة</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold">إجراء</th>
               </tr>
@@ -853,6 +864,7 @@ export default function TreasuryPage() {
                     <td className="px-4 py-3 text-gray-600">
                       {t.description || "-"}
                     </td>
+                    <td className="px-4 py-3 text-gray-600">{t.notes || "-"}</td>
                     <td className="px-4 py-3 text-xs text-gray-500">
                       {t.creator_name || "—"}
                     </td>
@@ -886,7 +898,7 @@ export default function TreasuryPage() {
               })}
               {sortedTransactions.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10">
+                  <td colSpan={8} className="px-4 py-10">
                     {transactions.length === 0 ? (
                       <div className="flex flex-col items-center gap-2 text-center">
                         <Landmark className="h-9 w-9 text-gray-300" />
@@ -921,7 +933,7 @@ export default function TreasuryPage() {
                   <td className="px-4 py-3 font-semibold text-gray-700">
                     إجمالي المعروض ({sortedTransactions.length})
                   </td>
-                  <td colSpan={2} />
+                  <td colSpan={3} />
                   <td className="px-4 py-3 font-semibold">
                     <div className="flex flex-col gap-0.5">
                       <span className="text-xs font-semibold text-green-700">
@@ -942,7 +954,7 @@ export default function TreasuryPage() {
                       </span>
                     </div>
                   </td>
-                  <td colSpan={2} />
+                  <td colSpan={3} />
                 </tr>
               </tfoot>
             )}
@@ -1067,6 +1079,15 @@ export default function TreasuryPage() {
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
             />
           </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">ملاحظة</label>
+            <textarea
+              name="notes"
+              rows={2}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              placeholder="ملاحظة إضافية (اختياري)"
+            />
+          </div>
           <div className="flex gap-3">
             <button
               type="submit"
@@ -1164,6 +1185,15 @@ export default function TreasuryPage() {
               name="description"
               type="text"
               placeholder="اختياري"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">ملاحظة</label>
+            <textarea
+              name="notes"
+              rows={2}
+              placeholder="ملاحظة إضافية (اختياري)"
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
             />
           </div>
@@ -1305,6 +1335,19 @@ export default function TreasuryPage() {
               value={editForm.description}
               onChange={(e) =>
                 setEditForm({ ...editForm, description: e.target.value })
+              }
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">
+              ملاحظة
+            </label>
+            <textarea
+              rows={2}
+              value={editForm.notes}
+              onChange={(e) =>
+                setEditForm({ ...editForm, notes: e.target.value })
               }
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
             />

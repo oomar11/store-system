@@ -247,7 +247,7 @@ export default function SalesPage() {
   }, [dateFrom, dateTo]);
 
   const filtered = invoices.filter((inv) =>
-    smartSearchMatch(searchTerm, [inv.invoice_number, inv.customer?.name])
+    smartSearchMatch(searchTerm, [inv.invoice_number, inv.customer?.name, inv.notes])
   );
   const { items: sorted, sortConfig, requestSort } = useSort(filtered);
   const totalSales = sorted.reduce((sum, inv) => sum + Number(inv.total), 0);
@@ -587,6 +587,7 @@ export default function SalesPage() {
                     sortDirection={sortConfig.direction}
                     onSort={requestSort}
                   />
+                  <th className="px-4 py-3 text-right font-medium">ملاحظة</th>
                   <th className="px-4 py-3 text-right font-medium">إجراءات</th>
                 </tr>
               </thead>
@@ -622,6 +623,7 @@ export default function SalesPage() {
                     <td className="px-4 py-3 text-emerald-700">
                       {formatCurrency(inv.paid_amount)}
                     </td>
+                    <td className="px-4 py-3 text-[#687386]">{inv.notes || "—"}</td>
                     <td className="px-4 py-3">
                       <TableRowActions actions={saleRowActions(inv)} />
                     </td>
@@ -629,7 +631,7 @@ export default function SalesPage() {
                 ))}
                 {sorted.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-4 py-10 text-center">
+                    <td colSpan={7} className="px-4 py-10 text-center">
                       <div className="mx-auto flex max-w-sm flex-col items-center gap-2">
                         <ShoppingCart className="h-9 w-9 text-[#c2c8d0]" />
                         <p className="text-sm font-semibold text-[#687386]">
