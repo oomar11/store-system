@@ -336,7 +336,7 @@ export default function PurchasesPage() {
   }, [dateFrom, dateTo]);
 
   const filtered = invoices.filter((inv) =>
-    smartSearchMatch(searchTerm, [inv.invoice_number, inv.supplier?.name])
+    smartSearchMatch(searchTerm, [inv.invoice_number, inv.supplier?.name, inv.notes])
   );
   const { items: sorted, sortConfig, requestSort } = useSort(filtered);
   const totalPurchases = sorted.reduce((sum, inv) => sum + Number(inv.total), 0);
@@ -880,6 +880,7 @@ export default function PurchasesPage() {
                 <SortableHeader label="التاريخ" field="created_at" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
                 <SortableHeader label="الإجمالي" field="total" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
                 <SortableHeader label="المدفوع" field="paid_amount" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
+                <th className="px-4 py-3 text-right font-medium">ملاحظة</th>
                 <th className="px-4 py-3 text-right font-medium">إجراءات</th>
               </tr>
             </thead>
@@ -909,6 +910,7 @@ export default function PurchasesPage() {
                   <td className="px-4 py-3 text-[#687386]">{formatDateRelative(inv.created_at)}</td>
                   <td className="px-4 py-3 font-semibold">{formatCurrency(inv.total)}</td>
                   <td className="px-4 py-3 text-emerald-700">{formatCurrency(inv.paid_amount)}</td>
+                  <td className="px-4 py-3 text-[#687386]">{inv.notes || "—"}</td>
                   <td className="px-4 py-3">
                     <TableRowActions actions={purchaseRowActions(inv)} />
                   </td>
@@ -916,7 +918,7 @@ export default function PurchasesPage() {
               ))}
               {sorted.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-[#98a2b3]">
+                  <td colSpan={7} className="px-4 py-10 text-center text-[#98a2b3]">
                     لا توجد فواتير مشتريات بعد
                   </td>
                 </tr>

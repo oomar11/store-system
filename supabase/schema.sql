@@ -183,6 +183,7 @@ CREATE TABLE journal_entries (
   entry_number TEXT NOT NULL UNIQUE,
   date DATE NOT NULL DEFAULT CURRENT_DATE,
   description TEXT NOT NULL,
+  notes TEXT,
   is_posted BOOLEAN NOT NULL DEFAULT false,
   created_by UUID REFERENCES profiles(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -221,6 +222,7 @@ CREATE TABLE safe_transactions (
   type TEXT NOT NULL CHECK (type IN ('deposit', 'withdrawal', 'transfer')),
   amount DECIMAL(12,2) NOT NULL,
   description TEXT,
+  notes TEXT,
   reference_type TEXT,
   reference_id UUID,
   related_safe_id UUID REFERENCES safes(id) ON DELETE SET NULL,

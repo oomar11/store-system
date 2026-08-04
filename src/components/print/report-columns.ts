@@ -221,6 +221,11 @@ export const treasuryColumns: ReportColumn[] = [
     label: "البيان",
     getValue: (r) => String(r.description || "—"),
   },
+  {
+    key: "notes",
+    label: "ملاحظة",
+    getValue: (r) => String(r.notes || "—"),
+  },
 ];
 
 export const expenseColumns: ReportColumn[] = [
@@ -254,6 +259,11 @@ export const expenseColumns: ReportColumn[] = [
     key: "description",
     label: "البيان",
     getValue: (r) => String(r.description || "—"),
+  },
+  {
+    key: "notes",
+    label: "ملاحظة",
+    getValue: (r) => String(r.notes || "—"),
   },
 ];
 

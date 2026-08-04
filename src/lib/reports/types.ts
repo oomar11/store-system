@@ -79,6 +79,7 @@ export interface TreasuryRaw {
   type: "deposit" | "withdrawal" | "transfer";
   amount: number;
   description?: string | null;
+  notes?: string | null;
   created_at: string;
   reference_type?: string | null;
   safe_id?: string;
@@ -92,6 +93,7 @@ export interface ExpenseRaw {
   entry_number: string;
   date: string;
   description: string;
+  notes?: string | null;
   amount: number;
   expense_account_id: string;
   expense_account_code: string;

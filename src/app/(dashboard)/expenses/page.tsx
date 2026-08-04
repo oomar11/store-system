@@ -163,6 +163,7 @@ export default function ExpensesPage() {
     const safeId = formData.get("safe_id") as string;
     const amount = Number(formData.get("amount"));
     const description = (formData.get("description") as string) || "";
+    const notes = (formData.get("notes") as string) || "";
 
     if (!expenseAccountId) {
       toastError("اختر حساب المصروف.");
@@ -186,6 +187,7 @@ export default function ExpensesPage() {
           date: formDate,
           amount,
           description,
+          notes,
           expenseAccountId,
           safeId,
           createdBy: profile?.id ?? null,
@@ -211,6 +213,7 @@ export default function ExpensesPage() {
       date: formDate,
       amount,
       description,
+      notes,
       expenseAccountId,
       safeId,
       createdBy: profile?.id ?? null,
@@ -476,6 +479,9 @@ export default function ExpensesPage() {
                   sortDirection={sortConfig.direction}
                   onSort={requestSort}
                 />
+                <th className="px-4 py-3 text-right text-xs font-semibold">
+                  ملاحظة
+                </th>
                 <th className="px-4 py-3 text-right text-xs font-semibold">بواسطة</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold">إجراء</th>
               </tr>
@@ -514,6 +520,7 @@ export default function ExpensesPage() {
                     {formatCurrency(item.amount)}
                   </td>
                   <td className="px-4 py-3 text-gray-600">{item.description || "-"}</td>
+                  <td className="px-4 py-3 text-gray-600">{item.notes || "-"}</td>
                   <td className="px-4 py-3 text-xs text-gray-500">
                     {item.created_by_name || "—"}
                   </td>
@@ -543,7 +550,7 @@ export default function ExpensesPage() {
               ))}
               {sorted.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-10">
+                  <td colSpan={9} className="px-4 py-10">
                     {expenses.length === 0 ? (
                       <div className="flex flex-col items-center gap-2 text-center">
                         <Wallet className="h-9 w-9 text-gray-300" />
@@ -581,7 +588,7 @@ export default function ExpensesPage() {
                     الإجمالي ({sorted.length})
                   </td>
                   <td className="px-4 py-3 text-red-700">{formatCurrency(totalAmount)}</td>
-                  <td colSpan={3} />
+                  <td colSpan={4} />
                 </tr>
               </tfoot>
             )}
@@ -673,6 +680,18 @@ export default function ExpensesPage() {
               type="text"
               defaultValue={editingExpense?.description || ""}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">
+              ملاحظة
+            </label>
+            <textarea
+              name="notes"
+              rows={2}
+              defaultValue={editingExpense?.notes || ""}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              placeholder="ملاحظة إضافية (اختياري)"
             />
           </div>
           <div className="flex gap-3">
