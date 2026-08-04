@@ -10,9 +10,9 @@ import {
   PRODUCTS_OPENING_SETUP_SQL_URL,
 } from "@/lib/products-opening-setup";
 import {
-  DEFAULT_BUY_DISCOUNT_FROM_SELL_PERCENT,
+  buyDiscountPercentForCategory,
   estimatedBuyPriceFromSell,
-  isEstimatedBuyFromSell,
+  isAnyCatalogBuyEstimate,
   resolveBuyPrice,
 } from "@/lib/product-cost";
 import {
@@ -30,12 +30,16 @@ function generateRandomSku(): string {
   return `P${ts}${rand}`.slice(0, 12);
 }
 
-function initialBuyPrice(product: Product | null): number {
+function initialBuyPrice(
+  product: Product | null,
+  categoryName?: string | null
+): number {
   const sell = Number(product?.sell_price) || 0;
   const buy = Number(product?.buy_price) || 0;
+  const discount = buyDiscountPercentForCategory(categoryName);
   // Legacy catalog: buy was copied from sell → treat as missing cost
   if (sell > 0 && (buy <= 0 || Math.abs(buy - sell) < 0.005)) {
-    return estimatedBuyPriceFromSell(sell);
+    return estimatedBuyPriceFromSell(sell, discount);
   }
   return buy;
 }
@@ -58,19 +62,24 @@ export function ProductForm({
   onSave,
   onCategoryCreated,
 }: ProductFormProps) {
-  const [form, setForm] = useState({
-    name: product?.name || "",
-    sku: product?.sku || "",
-    category_id: product?.category_id || "",
-    unit: product?.unit || "قطعة",
-    pack_size: Number(product?.pack_size ?? 1) || 1,
-    buy_price: initialBuyPrice(product),
-    sell_price: product?.sell_price || 0,
-    // لا نخلط الافتتاحي بالكمية الحالية — لو مفيش افتتاحي يبقى 0
-    opening_quantity: Number(product?.opening_quantity ?? 0),
-    min_quantity: product?.min_quantity ?? 5,
-    notify_low_stock: product?.notify_low_stock ?? true,
-    description: product?.description || "",
+  const [form, setForm] = useState(() => {
+    const categoryName = product?.category_id
+      ? categories.find((c) => c.id === product.category_id)?.name
+      : undefined;
+    return {
+      name: product?.name || "",
+      sku: product?.sku || "",
+      category_id: product?.category_id || "",
+      unit: product?.unit || "قطعة",
+      pack_size: Number(product?.pack_size ?? 1) || 1,
+      buy_price: initialBuyPrice(product, categoryName),
+      sell_price: product?.sell_price || 0,
+      // لا نخلط الافتتاحي بالكمية الحالية — لو مفيش افتتاحي يبقى 0
+      opening_quantity: Number(product?.opening_quantity ?? 0),
+      min_quantity: product?.min_quantity ?? 5,
+      notify_low_stock: product?.notify_low_stock ?? true,
+      description: product?.description || "",
+    };
   });
   const [tiers, setTiers] = useState<PriceTier[]>([]);
   /** Non-default tier id → sell price string for controlled inputs */
@@ -92,7 +101,7 @@ export function ProductForm({
     !!product &&
       Number(product.buy_price) > 0 &&
       Math.abs(Number(product.buy_price) - Number(product.sell_price)) >= 0.005 &&
-      !isEstimatedBuyFromSell(
+      !isAnyCatalogBuyEstimate(
         Number(product.buy_price),
         Number(product.sell_price)
       )
@@ -110,6 +119,12 @@ export function ProductForm({
       a.name.localeCompare(b.name, "ar")
     );
   }, [categories, createdCategories]);
+
+  const selectedCategoryName =
+    localCategories.find((c) => c.id === form.category_id)?.name ||
+    categoryQuery ||
+    "";
+  const buyDiscountPercent = buyDiscountPercentForCategory(selectedCategoryName);
 
   useEffect(() => {
     if (product) return;
@@ -175,7 +190,19 @@ export function ProductForm({
   ]);
 
   function selectCategory(id: string, name: string) {
-    setForm((prev) => ({ ...prev, category_id: id }));
+    const discount = buyDiscountPercentForCategory(name);
+    setForm((prev) => {
+      const next = { ...prev, category_id: id };
+      if (
+        !buyManuallyEdited.current ||
+        prev.buy_price <= 0 ||
+        isAnyCatalogBuyEstimate(prev.buy_price, prev.sell_price)
+      ) {
+        next.buy_price = estimatedBuyPriceFromSell(prev.sell_price, discount);
+        buyManuallyEdited.current = false;
+      }
+      return next;
+    });
     setCategoryQuery(id ? name : "");
     setShowCategoryList(false);
   }
@@ -317,8 +344,12 @@ export function ProductForm({
     }
 
     const opening_quantity = Number(form.opening_quantity) || 0;
-    // No fixed buy price: opening / catalog cost = sell − default trade discount
-    const buyPrice = resolveBuyPrice(form.buy_price, sellPrice);
+    // No fixed buy price: opening / catalog cost = sell − category trade discount
+    const buyPrice = resolveBuyPrice(
+      form.buy_price,
+      sellPrice,
+      buyDiscountPercent
+    );
 
     const data: Record<string, unknown> = {
       name: form.name,
@@ -640,10 +671,9 @@ export function ProductForm({
               dir="ltr"
             />
             <p className="mt-1 text-[10px] text-gray-400">
-              افتراضي للرصيد الافتتاحي: خصم {DEFAULT_BUY_DISCOUNT_FROM_SELL_PERCENT}٪
-              من سعر البيع
+              افتراضي للرصيد الافتتاحي: خصم {buyDiscountPercent}٪ من سعر البيع
               {form.sell_price > 0
-                ? ` (= ${estimatedBuyPriceFromSell(Number(form.sell_price))})`
+                ? ` (= ${estimatedBuyPriceFromSell(Number(form.sell_price), buyDiscountPercent)})`
                 : ""}
             </p>
           </div>
@@ -658,14 +688,18 @@ export function ProductForm({
               onChange={(e) => {
                 const n = parseNumberInput(e.target.value);
                 const sell = n === null ? 0 : n;
+                const discount = buyDiscountPercentForCategory(
+                  localCategories.find((c) => c.id === form.category_id)?.name ||
+                    categoryQuery
+                );
                 setForm((prev) => {
                   const next = { ...prev, sell_price: sell };
                   if (
                     !buyManuallyEdited.current ||
                     prev.buy_price <= 0 ||
-                    isEstimatedBuyFromSell(prev.buy_price, prev.sell_price)
+                    isAnyCatalogBuyEstimate(prev.buy_price, prev.sell_price)
                   ) {
-                    next.buy_price = estimatedBuyPriceFromSell(sell);
+                    next.buy_price = estimatedBuyPriceFromSell(sell, discount);
                     buyManuallyEdited.current = false;
                   }
                   return next;

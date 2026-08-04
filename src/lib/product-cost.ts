@@ -4,9 +4,20 @@
  * (typical trade purchase: buy below retail).
  */
 export const DEFAULT_BUY_DISCOUNT_FROM_SELL_PERCENT = 10;
+/** قطاعات (UPVC profiles): deeper trade discount off sell */
+export const SECTORS_BUY_DISCOUNT_FROM_SELL_PERCENT = 20;
 
 function round2(n: number): number {
   return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+/** Category name → buy discount % from sell (قطاعات = 20%, else 10%). */
+export function buyDiscountPercentForCategory(
+  categoryName: string | null | undefined
+): number {
+  const name = (categoryName || "").trim();
+  if (/قطاع/.test(name)) return SECTORS_BUY_DISCOUNT_FROM_SELL_PERCENT;
+  return DEFAULT_BUY_DISCOUNT_FROM_SELL_PERCENT;
 }
 
 /** Cost = sell × (1 − discount%). Returns 0 when sell ≤ 0. */
@@ -44,4 +55,26 @@ export function isEstimatedBuyFromSell(
   const buy = Number(buyPrice) || 0;
   if (sell <= 0) return buy <= 0;
   return Math.abs(buy - estimatedBuyPriceFromSell(sell, discountPercent)) < 0.005;
+}
+
+/**
+ * True when buy matches any known catalog estimate (10% default or 20% sectors)
+ * for this sell price — used so changing category/sell can re-sync cost.
+ */
+export function isAnyCatalogBuyEstimate(
+  buyPrice: number,
+  sellPrice: number
+): boolean {
+  return (
+    isEstimatedBuyFromSell(
+      buyPrice,
+      sellPrice,
+      DEFAULT_BUY_DISCOUNT_FROM_SELL_PERCENT
+    ) ||
+    isEstimatedBuyFromSell(
+      buyPrice,
+      sellPrice,
+      SECTORS_BUY_DISCOUNT_FROM_SELL_PERCENT
+    )
+  );
 }

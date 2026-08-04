@@ -3,7 +3,7 @@ import type { Category, Product } from "@/types";
 import { PRODUCT_COLUMNS, getEntityLabel } from "./schemas";
 import { downloadTemplate, exportRows } from "./download";
 import { cellToString, parseBoolean, parseNumber } from "./parse";
-import { estimatedBuyPriceFromSell } from "@/lib/product-cost";
+import { buyDiscountPercentForCategory, estimatedBuyPriceFromSell } from "@/lib/product-cost";
 
 export type RowAction = "create" | "update" | "skip" | "error";
 
@@ -143,6 +143,7 @@ export function buildProductPreview(
 
     const resolvedSell = sell ?? existingProduct?.sell_price ?? 0;
     let resolvedBuy = buy ?? existingProduct?.buy_price ?? 0;
+    const buyDiscount = buyDiscountPercentForCategory(categoryName);
 
     if (buy != null && buy > 0 && Math.abs(buy - resolvedSell) >= 0.005) {
       resolvedBuy = buy;
@@ -151,16 +152,16 @@ export function buildProductPreview(
       resolvedSell > 0 &&
       (buy <= 0 || Math.abs(buy - resolvedSell) < 0.005)
     ) {
-      resolvedBuy = estimatedBuyPriceFromSell(resolvedSell);
+      resolvedBuy = estimatedBuyPriceFromSell(resolvedSell, buyDiscount);
       warnings.push(
         buy <= 0
-          ? `سعر الشراء فارغ — تُسعَّر التكلفة بخصم ١٠٪ من البيع (${resolvedBuy})`
-          : `سعر الشراء = البيع — تُسعَّر التكلفة بخصم ١٠٪ من البيع (${resolvedBuy})`
+          ? `سعر الشراء فارغ — تُسعَّر التكلفة بخصم ${buyDiscount}٪ من البيع (${resolvedBuy})`
+          : `سعر الشراء = البيع — تُسعَّر التكلفة بخصم ${buyDiscount}٪ من البيع (${resolvedBuy})`
       );
     } else if (buy == null && !existingProduct && resolvedSell > 0) {
-      resolvedBuy = estimatedBuyPriceFromSell(resolvedSell);
+      resolvedBuy = estimatedBuyPriceFromSell(resolvedSell, buyDiscount);
       warnings.push(
-        `سعر الشراء فارغ — تُسعَّر التكلفة بخصم ١٠٪ من البيع (${resolvedBuy})`
+        `سعر الشراء فارغ — تُسعَّر التكلفة بخصم ${buyDiscount}٪ من البيع (${resolvedBuy})`
       );
     } else if (buy == null && existingProduct) {
       const existingBuy = Number(existingProduct.buy_price) || 0;
@@ -169,9 +170,9 @@ export function buildProductPreview(
         resolvedSell > 0 &&
         (existingBuy <= 0 || Math.abs(existingBuy - existingSell) < 0.005)
       ) {
-        resolvedBuy = estimatedBuyPriceFromSell(resolvedSell);
+        resolvedBuy = estimatedBuyPriceFromSell(resolvedSell, buyDiscount);
         warnings.push(
-          `تكلفة تقديرية بخصم ١٠٪ من البيع (${resolvedBuy}) — كان الشراء = البيع أو صفر`
+          `تكلفة تقديرية بخصم ${buyDiscount}٪ من البيع (${resolvedBuy}) — كان الشراء = البيع أو صفر`
         );
       } else {
         resolvedBuy = existingBuy;
