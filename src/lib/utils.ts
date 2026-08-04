@@ -13,6 +13,11 @@ export function formatCurrency(amount: number): string {
   }).format(amount);
 }
 
+/** Round money to 2 decimal places (EGP piastres) for payable totals. */
+export function roundMoney(amount: number): number {
+  return Math.round((Number(amount) || 0) * 100) / 100;
+}
+
 export function formatDate(date: string | Date): string {
   return new Intl.DateTimeFormat("ar-EG", {
     year: "numeric",

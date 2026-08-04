@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { createClient } from "@/lib/supabase";
-import { formatCurrency, formatDateRelative, smartSearchMatch, parseNumberInput } from "@/lib/utils";
+import { formatCurrency, formatDateRelative, smartSearchMatch, parseNumberInput, roundMoney } from "@/lib/utils";
 import { createInvoiceOnlineOrQueue, getSnapshot, isBrowserOnline, withTimeout } from "@/lib/offline";
 import { mapCartToInvoiceItems } from "@/lib/invoice-cost";
 import {
@@ -536,7 +536,7 @@ export function ReturnsPanel({ embedded = false }: { embedded?: boolean }) {
   const netReturnVal = totalSaleReturns - totalPurchaseReturns;
 
   const cartTotal = useMemo(
-    () => cart.reduce((sum, item) => sum + item.total, 0),
+    () => roundMoney(cart.reduce((sum, item) => sum + item.total, 0)),
     [cart]
   );
   const returnPaidAmount = paymentMethod === "cash" ? cartTotal : 0;
@@ -551,7 +551,7 @@ export function ReturnsPanel({ embedded = false }: { embedded?: boolean }) {
         return {
           ...item,
           quantity: qty,
-          total: qty * item.unit_price,
+          total: roundMoney(qty * item.unit_price),
         };
       })
     );
@@ -591,7 +591,7 @@ export function ReturnsPanel({ embedded = false }: { embedded?: boolean }) {
 
     const targetCustomerId = returnType === "sale_return" ? selectedCustomerId || null : null;
     const targetSupplierId = returnType === "purchase_return" ? selectedSupplierId || null : null;
-    const total = activeReturnLines.reduce((s, i) => s + i.total, 0);
+    const total = roundMoney(activeReturnLines.reduce((s, i) => s + i.total, 0));
     const paidAmount = paymentMethod === "cash" ? total : 0;
 
     try {

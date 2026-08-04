@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase";
 import {
   formatCurrency,
+  roundMoney,
   smartSearchMatch,
   parseNumberInput,
   stockQtyBadgeClass,
@@ -130,6 +131,9 @@ interface CartItem {
   /** Retail unit price before tier markdown (for invoice print) */
   list_unit_price?: number | null;
 }
+
+/** Allow fractional units (e.g. 0.5 kg) while rejecting empty/zero lines. */
+const MIN_CART_QTY = 0.001;
 
 function cartLineUnitCost(item: CartItem): number {
   if (item.unit_cost != null && !Number.isNaN(Number(item.unit_cost))) {
@@ -780,7 +784,7 @@ export default function POSPage({
                   item.product.sell_price,
                   unitPrice
                 ),
-                total: unitPrice * item.quantity - item.discount,
+                total: roundMoney(unitPrice * item.quantity - item.discount),
               };
             })
           );
@@ -834,7 +838,7 @@ export default function POSPage({
             item.product.sell_price,
             unitPrice
           ),
-          total: unitPrice * item.quantity - item.discount,
+          total: roundMoney(unitPrice * item.quantity - item.discount),
         };
       })
     );
@@ -1512,7 +1516,7 @@ export default function POSPage({
           ...item,
           unit_price: unitPrice,
           discount: 0,
-          total: Math.max(0, item.quantity * unitPrice),
+          total: roundMoney(Math.max(0, item.quantity * unitPrice)),
         };
       })
     );
@@ -1546,9 +1550,11 @@ export default function POSPage({
   function commitCartQuantity(index: number) {
     const item = cart[index];
     if (!item) return;
-    let next = Math.max(1, Number(item.quantity) || 0);
+    let next = Math.max(MIN_CART_QTY, Number(item.quantity) || 0);
     if (!allowsOutOfStock) {
-      next = Math.min(next, Math.max(1, Number(item.product.quantity) || 0));
+      const stock = Math.max(0, Number(item.product.quantity) || 0);
+      if (stock > 0) next = Math.min(next, stock);
+      else next = MIN_CART_QTY;
     }
     if (next !== item.quantity) updateCartItem(index, { quantity: next });
   }
@@ -1575,8 +1581,9 @@ export default function POSPage({
             ? {
                 ...item,
                 quantity: item.quantity + addQty,
-                total:
-                  (item.quantity + addQty) * item.unit_price - item.discount,
+                total: roundMoney(
+                  (item.quantity + addQty) * item.unit_price - item.discount
+                ),
               }
             : item
         )
@@ -1590,7 +1597,7 @@ export default function POSPage({
           quantity: addQty,
           unit_price: unitPrice,
           discount: 0,
-          total: unitPrice * addQty,
+          total: roundMoney(unitPrice * addQty),
           unit_cost: (() => {
             if (product.category?.name) {
               const fromSell = catalogUnitCostFromProduct(product);
@@ -1615,7 +1622,9 @@ export default function POSPage({
       cart.map((item, i) => {
         if (i !== index) return item;
         const updated = { ...item, ...updates };
-        updated.total = updated.quantity * updated.unit_price - updated.discount;
+        updated.total = roundMoney(
+          updated.quantity * updated.unit_price - updated.discount
+        );
         if (
           !isPurchaseSide &&
           updates.unit_price != null &&
@@ -1635,9 +1644,10 @@ export default function POSPage({
     const item = cart[index];
     if (!item) return;
     const current = Math.max(0, Number(item.quantity) || 0);
-    let next = Math.max(1, current + delta);
+    let next = Math.max(MIN_CART_QTY, current + delta);
     if (!allowsOutOfStock) {
-      next = Math.min(next, Math.max(1, Number(item.product.quantity) || 0));
+      const stock = Math.max(0, Number(item.product.quantity) || 0);
+      if (stock > 0) next = Math.min(next, stock);
     }
     if (next === current) return;
     updateCartItem(index, { quantity: next });
@@ -1784,13 +1794,17 @@ export default function POSPage({
     toastSuccess("تم حذف الحجز");
   }
 
-  const subtotal = cart.reduce((sum, item) => sum + item.total, 0);
+  const subtotal = roundMoney(cart.reduce((sum, item) => sum + item.total, 0));
   const cartItemCount = cart.length;
-  const discountAmount = discountType === "percent" ? (subtotal * discount) / 100 : discount;
-  const totalAfterDiscount = subtotal - discountAmount;
+  const discountAmount = roundMoney(
+    discountType === "percent" ? (subtotal * discount) / 100 : discount
+  );
+  const totalAfterDiscount = roundMoney(subtotal - discountAmount);
   const taxRate = settings?.tax_enabled ? settings.tax_rate : 0;
-  const taxAmount = settings?.tax_enabled ? (totalAfterDiscount * taxRate) / 100 : 0;
-  const grandTotal = totalAfterDiscount + taxAmount;
+  const taxAmount = roundMoney(
+    settings?.tax_enabled ? (totalAfterDiscount * taxRate) / 100 : 0
+  );
+  const grandTotal = roundMoney(totalAfterDiscount + taxAmount);
   const tracksSaleCost = mode === "sale" || mode === "quote";
   const saleLoss = tracksSaleCost
     ? analyzeSaleLoss(cart, totalAfterDiscount, discountAmount)
@@ -1798,18 +1812,21 @@ export default function POSPage({
   // نقدي مبيعات: paidAmount = المستلم من العميل (قد يزيد عن الإجمالي لحساب الباقي)
   // نقدي مشتريات: المدفوع للمورد = الإجمالي بعد الخصم دائماً
   // آجل: paidAmount = المدفوع مقدماً؛ يتخزن على الفاتورة actualPaidAmount
-  const actualPaidAmount =
+  const actualPaidAmount = roundMoney(
     paymentMethod === "cash"
       ? grandTotal
-      : Math.min(Math.max(0, paidAmount), grandTotal);
-  const changeDue =
+      : Math.min(Math.max(0, paidAmount), grandTotal)
+  );
+  const changeDue = roundMoney(
     paymentMethod === "cash" && !isPurchaseSide
       ? Math.max(0, paidAmount - grandTotal)
-      : 0;
-  const remaining =
+      : 0
+  );
+  const remaining = roundMoney(
     paymentMethod === "credit"
       ? Math.max(0, grandTotal - actualPaidAmount)
-      : 0;
+      : 0
+  );
   const needsSafe = actualPaidAmount > 0;
   const missingSafeSelection = !isDocMode && needsSafe && !selectedSafeId;
   const selectedSafe = safes.find((s) => s.id === selectedSafeId);
@@ -3464,7 +3481,7 @@ export default function POSPage({
                         <button
                           type="button"
                           onClick={() => bumpCartQuantity(index, -1)}
-                          disabled={item.quantity <= 1}
+                          disabled={item.quantity <= MIN_CART_QTY}
                           className="inline-flex h-8 w-8 items-center justify-center text-gray-600 transition-colors hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-35"
                           title="إنقاص"
                         >
@@ -3473,7 +3490,8 @@ export default function POSPage({
                         <input
                           id={`qty-input-${index}`}
                           type="number"
-                          min="1"
+                          min={MIN_CART_QTY}
+                          step="any"
                           max={allowsOutOfStock ? undefined : item.product.quantity}
                           value={item.quantity === 0 ? "" : item.quantity}
                           onChange={(e) => {
@@ -3483,8 +3501,8 @@ export default function POSPage({
                             });
                           }}
                           onBlur={() => {
-                            if (!item.quantity || item.quantity < 1) {
-                              updateCartItem(index, { quantity: 1 });
+                            if (!item.quantity || item.quantity < MIN_CART_QTY) {
+                              updateCartItem(index, { quantity: MIN_CART_QTY });
                             }
                           }}
                           onKeyDown={(e) => {
@@ -3506,7 +3524,7 @@ export default function POSPage({
                               focusSearchInput();
                             }
                           }}
-                          className="h-8 w-10 border-x border-gray-200 bg-white text-center text-sm font-bold text-gray-900 tabular-nums focus:outline-none focus:ring-1 focus:ring-inset focus:ring-blue-400"
+                          className="h-8 w-14 border-x border-gray-200 bg-white text-center text-sm font-bold text-gray-900 tabular-nums focus:outline-none focus:ring-1 focus:ring-inset focus:ring-blue-400"
                           dir="ltr"
                         />
                         <button
@@ -3664,7 +3682,8 @@ export default function POSPage({
                     step="0.01"
                     value={paidAmount === 0 ? "" : paidAmount}
                     onChange={(e) => {
-                      const val = e.target.value === "" ? 0 : +e.target.value;
+                      const raw = e.target.value === "" ? 0 : +e.target.value;
+                      const val = roundMoney(raw);
                       if (paymentMethod === "credit") {
                         setPaidAmount(Math.min(Math.max(0, val), grandTotal));
                       } else {

@@ -10,6 +10,7 @@ import {
   formatDateRelative,
   smartSearchMatch,
   parseNumberInput,
+  roundMoney,
 } from "@/lib/utils";
 import { allocateDocumentNumber } from "@/lib/document-numbers";
 import { createInvoiceOnlineOrQueue, getSnapshot, isBrowserOnline, withTimeout } from "@/lib/offline";
@@ -250,7 +251,10 @@ export function DocumentsPanel({
   const { items: sorted, sortConfig, requestSort } = useSort(filtered);
   const listTotal = sorted.reduce((sum, doc) => sum + Number(doc.total), 0);
   const calculatedTotal = useMemo(
-    () => items.reduce((sum, item) => sum + item.quantity * item.unit_price, 0),
+    () =>
+      roundMoney(
+        items.reduce((sum, item) => sum + item.quantity * item.unit_price, 0)
+      ),
     [items]
   );
 
@@ -361,7 +365,7 @@ export function DocumentsPanel({
             ? {
                 ...item,
                 quantity: item.quantity + 1,
-                total: (item.quantity + 1) * item.unit_price,
+                total: roundMoney((item.quantity + 1) * item.unit_price),
               }
             : item
         )
@@ -369,7 +373,7 @@ export function DocumentsPanel({
     } else {
       setItems([
         ...items,
-        { product, quantity: 1, unit_price: price, total: price },
+        { product, quantity: 1, unit_price: price, total: roundMoney(price) },
       ]);
     }
     setProductSearch("");
@@ -379,7 +383,12 @@ export function DocumentsPanel({
     setItems(
       items.map((item, i) =>
         i === index
-          ? { ...item, quantity, unit_price, total: quantity * unit_price }
+          ? {
+              ...item,
+              quantity,
+              unit_price,
+              total: roundMoney(quantity * unit_price),
+            }
           : item
       )
     );
@@ -445,7 +454,7 @@ export function DocumentsPanel({
           product_id: item.product.id,
           quantity: item.quantity,
           unit_price: item.unit_price,
-          total: item.quantity * item.unit_price,
+          total: roundMoney(item.quantity * item.unit_price),
         }))
       );
 

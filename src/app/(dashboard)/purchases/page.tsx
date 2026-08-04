@@ -8,6 +8,7 @@ import {
   formatDateRelative,
   smartSearchMatch,
   parseNumberInput,
+  roundMoney,
 } from "@/lib/utils";
 import {
   adjustProductStock,
@@ -341,14 +342,18 @@ export default function PurchasesPage() {
   const { items: sorted, sortConfig, requestSort } = useSort(filtered);
   const totalPurchases = sorted.reduce((sum, inv) => sum + Number(inv.total), 0);
   const calculatedTotal = useMemo(
-    () => items.reduce((sum, item) => sum + item.quantity * item.unit_price, 0),
+    () =>
+      roundMoney(
+        items.reduce((sum, item) => sum + item.quantity * item.unit_price, 0)
+      ),
     [items]
   );
-  const discountAmount =
+  const discountAmount = roundMoney(
     discountType === "percent"
       ? (calculatedTotal * discount) / 100
-      : Math.min(discount, calculatedTotal);
-  const grandTotal = Math.max(0, calculatedTotal - discountAmount);
+      : Math.min(discount, calculatedTotal)
+  );
+  const grandTotal = roundMoney(Math.max(0, calculatedTotal - discountAmount));
 
   async function copyInvoiceNumber(invoiceNumber: string) {
     try {
@@ -534,7 +539,11 @@ export default function PurchasesPage() {
       prev.map((item) => {
         const price =
           next === "sell" ? item.product.sell_price : item.product.buy_price;
-        return { ...item, unit_price: price, total: item.quantity * price };
+        return {
+          ...item,
+          unit_price: price,
+          total: roundMoney(item.quantity * price),
+        };
       })
     );
   }
@@ -548,7 +557,7 @@ export default function PurchasesPage() {
             ? {
                 ...item,
                 quantity: item.quantity + 1,
-                total: (item.quantity + 1) * item.unit_price,
+                total: roundMoney((item.quantity + 1) * item.unit_price),
               }
             : item
         )
@@ -561,7 +570,7 @@ export default function PurchasesPage() {
           product,
           quantity: 1,
           unit_price: price,
-          total: price,
+          total: roundMoney(price),
         },
       ]);
     }
@@ -572,7 +581,12 @@ export default function PurchasesPage() {
     setItems(
       items.map((item, i) =>
         i === index
-          ? { ...item, quantity, unit_price, total: quantity * unit_price }
+          ? {
+              ...item,
+              quantity,
+              unit_price,
+              total: roundMoney(quantity * unit_price),
+            }
           : item
       )
     );
@@ -596,7 +610,7 @@ export default function PurchasesPage() {
       product: item.product,
       quantity: item.quantity,
       unit_price: item.unit_price,
-      total: item.quantity * item.unit_price,
+      total: roundMoney(item.quantity * item.unit_price),
     }));
 
     if (needsSafe && !form.safe_id) {
