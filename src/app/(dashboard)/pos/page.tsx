@@ -131,6 +131,9 @@ interface CartItem {
   list_unit_price?: number | null;
 }
 
+/** Allow fractional units (e.g. 0.5 kg) while rejecting empty/zero lines. */
+const MIN_CART_QTY = 0.001;
+
 function cartLineUnitCost(item: CartItem): number {
   if (item.unit_cost != null && !Number.isNaN(Number(item.unit_cost))) {
     return Number(item.unit_cost);
@@ -1546,9 +1549,11 @@ export default function POSPage({
   function commitCartQuantity(index: number) {
     const item = cart[index];
     if (!item) return;
-    let next = Math.max(1, Number(item.quantity) || 0);
+    let next = Math.max(MIN_CART_QTY, Number(item.quantity) || 0);
     if (!allowsOutOfStock) {
-      next = Math.min(next, Math.max(1, Number(item.product.quantity) || 0));
+      const stock = Math.max(0, Number(item.product.quantity) || 0);
+      if (stock > 0) next = Math.min(next, stock);
+      else next = MIN_CART_QTY;
     }
     if (next !== item.quantity) updateCartItem(index, { quantity: next });
   }
@@ -1635,9 +1640,10 @@ export default function POSPage({
     const item = cart[index];
     if (!item) return;
     const current = Math.max(0, Number(item.quantity) || 0);
-    let next = Math.max(1, current + delta);
+    let next = Math.max(MIN_CART_QTY, current + delta);
     if (!allowsOutOfStock) {
-      next = Math.min(next, Math.max(1, Number(item.product.quantity) || 0));
+      const stock = Math.max(0, Number(item.product.quantity) || 0);
+      if (stock > 0) next = Math.min(next, stock);
     }
     if (next === current) return;
     updateCartItem(index, { quantity: next });
@@ -3464,7 +3470,7 @@ export default function POSPage({
                         <button
                           type="button"
                           onClick={() => bumpCartQuantity(index, -1)}
-                          disabled={item.quantity <= 1}
+                          disabled={item.quantity <= MIN_CART_QTY}
                           className="inline-flex h-8 w-8 items-center justify-center text-gray-600 transition-colors hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-35"
                           title="إنقاص"
                         >
@@ -3473,7 +3479,8 @@ export default function POSPage({
                         <input
                           id={`qty-input-${index}`}
                           type="number"
-                          min="1"
+                          min={MIN_CART_QTY}
+                          step="any"
                           max={allowsOutOfStock ? undefined : item.product.quantity}
                           value={item.quantity === 0 ? "" : item.quantity}
                           onChange={(e) => {
@@ -3483,8 +3490,8 @@ export default function POSPage({
                             });
                           }}
                           onBlur={() => {
-                            if (!item.quantity || item.quantity < 1) {
-                              updateCartItem(index, { quantity: 1 });
+                            if (!item.quantity || item.quantity < MIN_CART_QTY) {
+                              updateCartItem(index, { quantity: MIN_CART_QTY });
                             }
                           }}
                           onKeyDown={(e) => {
@@ -3506,7 +3513,7 @@ export default function POSPage({
                               focusSearchInput();
                             }
                           }}
-                          className="h-8 w-10 border-x border-gray-200 bg-white text-center text-sm font-bold text-gray-900 tabular-nums focus:outline-none focus:ring-1 focus:ring-inset focus:ring-blue-400"
+                          className="h-8 w-14 border-x border-gray-200 bg-white text-center text-sm font-bold text-gray-900 tabular-nums focus:outline-none focus:ring-1 focus:ring-inset focus:ring-blue-400"
                           dir="ltr"
                         />
                         <button
