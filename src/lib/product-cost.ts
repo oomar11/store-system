@@ -1,17 +1,18 @@
 /**
  * Estimated purchase/cost price when there is no fixed buy price.
- * Opening stock and new products default to a discount off the sell price
- * (typical trade purchase: buy below retail).
+ * Always derived from products.sell_price (catalog), never from invoice unit prices.
+ * - قطاعات سيتي (and other قطاعات except كورين): sell − 20%
+ * - كورين + everything else: sell − 10%
  */
 export const DEFAULT_BUY_DISCOUNT_FROM_SELL_PERCENT = 10;
-/** قطاعات (UPVC profiles): deeper trade discount off sell */
+/** قطاعات سيتي profiles: deeper trade discount off catalog sell */
 export const SECTORS_BUY_DISCOUNT_FROM_SELL_PERCENT = 20;
 
 function round2(n: number): number {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
 
-/** Category name → buy discount % from sell (قطاعات سيتي = 20%, كورين/الباقي = 10%). */
+/** Category name → buy discount % from catalog sell (كورين/default 10%, قطاعات 20%). */
 export function buyDiscountPercentForCategory(
   categoryName: string | null | undefined
 ): number {
@@ -22,7 +23,7 @@ export function buyDiscountPercentForCategory(
   return DEFAULT_BUY_DISCOUNT_FROM_SELL_PERCENT;
 }
 
-/** Cost = sell × (1 − discount%). Returns 0 when sell ≤ 0. */
+/** Cost = catalog sell × (1 − discount%). Returns 0 when sell ≤ 0. */
 export function estimatedBuyPriceFromSell(
   sellPrice: number,
   discountPercent: number = DEFAULT_BUY_DISCOUNT_FROM_SELL_PERCENT
@@ -34,8 +35,25 @@ export function estimatedBuyPriceFromSell(
 }
 
 /**
+ * Catalog unit cost from the product row: products.sell_price ± category rule.
+ * Do not pass invoice line prices here.
+ */
+export function catalogUnitCostFromProduct(product: {
+  sell_price?: number | null;
+  category?: { name?: string | null } | null;
+  category_name?: string | null;
+}): number {
+  const sell = Number(product.sell_price) || 0;
+  const categoryName = product.category?.name ?? product.category_name ?? null;
+  return estimatedBuyPriceFromSell(
+    sell,
+    buyDiscountPercentForCategory(categoryName)
+  );
+}
+
+/**
  * Prefer an explicit buy price; if missing/zero and sell is set, use the
- * default discount-from-sell estimate (opening-balance / catalog costing).
+ * catalog discount-from-sell estimate.
  */
 export function resolveBuyPrice(
   buyPrice: number | null | undefined,

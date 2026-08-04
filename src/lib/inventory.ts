@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { catalogUnitCostFromProduct } from "@/lib/product-cost";
 
 export type StockLine = {
   product_id: string;
@@ -75,31 +76,42 @@ export type BuyPriceLine = {
 };
 
 /**
- * Update catalog buy_price to the latest net purchase unit cost.
- * Best-effort per product; failures are ignored so the purchase itself stands.
+ * Keep catalog buy_price aligned with products.sell_price (10%/20% by category).
+ * Purchase invoice net costs must NOT overwrite this — costing is catalog-based.
  */
 export async function updateProductsBuyPrice(
   supabase: SupabaseClient,
   lines: BuyPriceLine[]
 ): Promise<void> {
-  const byProduct = new Map<string, number>();
-  for (const line of lines) {
-    if (!line.product_id) continue;
-    const cost = Number(line.unit_cost);
-    if (!Number.isFinite(cost) || cost < 0) continue;
-    byProduct.set(line.product_id, cost);
-  }
-  if (byProduct.size === 0) return;
+  const ids = [
+    ...new Set(lines.map((l) => l.product_id).filter(Boolean)),
+  ];
+  if (ids.length === 0) return;
+
+  const { data: rows } = await supabase
+    .from("products")
+    .select("id, sell_price, category:categories(name)")
+    .in("id", ids);
+
+  if (!rows?.length) return;
 
   await Promise.all(
-    Array.from(byProduct.entries()).map(async ([productId, cost]) => {
+    rows.map(async (row) => {
+      const category = Array.isArray(row.category)
+        ? row.category[0]
+        : row.category;
+      const cost = catalogUnitCostFromProduct({
+        sell_price: row.sell_price,
+        category: category as { name?: string } | null,
+      });
+      if (!(cost > 0)) return;
       try {
         await supabase
           .from("products")
           .update({ buy_price: cost })
-          .eq("id", productId);
+          .eq("id", row.id);
       } catch {
-        /* best-effort: offline or transient failure must not fail the purchase */
+        /* best-effort */
       }
     })
   );

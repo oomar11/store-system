@@ -13,7 +13,6 @@ import {
   buyDiscountPercentForCategory,
   estimatedBuyPriceFromSell,
   isAnyCatalogBuyEstimate,
-  resolveBuyPrice,
 } from "@/lib/product-cost";
 import {
   deleteProductTierPrices,
@@ -344,12 +343,8 @@ export function ProductForm({
     }
 
     const opening_quantity = Number(form.opening_quantity) || 0;
-    // No fixed buy price: opening / catalog cost = sell − category trade discount
-    const buyPrice = resolveBuyPrice(
-      form.buy_price,
-      sellPrice,
-      buyDiscountPercent
-    );
+    // Catalog cost always from products.sell_price (10%/20% by category) — not invoices
+    const buyPrice = estimatedBuyPriceFromSell(sellPrice, buyDiscountPercent);
 
     const data: Record<string, unknown> = {
       name: form.name,
