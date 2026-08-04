@@ -46,6 +46,17 @@ function lineRevenue(item: { total: number }): number {
   return Number(item.total) || 0;
 }
 
+function invoiceNetRevenueBeforeTax(inv: InvoiceRaw): number {
+  if (inv.subtotal != null) {
+    return Math.max(
+      0,
+      Number(inv.subtotal) - Number(inv.discount_amount || 0)
+    );
+  }
+  // Fallback for legacy rows that may miss subtotal: derive pre-tax net from total.
+  return Math.max(0, Number(inv.total) - Number(inv.tax_amount || 0));
+}
+
 function analyzeInvoice(inv: InvoiceRaw): InvoiceProfitRow {
   const items = inv.items || [];
   let cost = 0;
@@ -59,10 +70,7 @@ function analyzeInvoice(inv: InvoiceRaw): InvoiceProfitRow {
     else reliable += 1;
   }
 
-  const revenue =
-    inv.subtotal != null
-      ? Number(inv.subtotal)
-      : Number(inv.total) - Number(inv.tax_amount || 0);
+  const revenue = invoiceNetRevenueBeforeTax(inv);
 
   const profit = revenue - cost;
   let accuracy: CostAccuracy = "reliable";
