@@ -18,7 +18,7 @@ const themeInitScript = `(function(){try{var k='windoor-theme';var t=localStorag
 export const metadata: Metadata = {
   title: "ويندور - Windoor",
   description: "نظام إدارة المخزون والحسابات - ويندور",
-  manifest: "/manifest.json?v=14",
+  manifest: "/manifest.json?v=15",
   icons: {
     icon: [
       {
