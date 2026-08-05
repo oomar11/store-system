@@ -169,6 +169,9 @@ export function InvoicePreview({
     currentDateTime,
     kind,
     printOpts,
+    // From sales history the DB balance already includes this invoice's remaining.
+    // After POS save, selectedCustomer still holds the pre-posting balance.
+    balanceIncludesInvoice: isView,
   };
 
   if (!canPortal) return null;
@@ -285,6 +288,8 @@ interface InvoiceContentProps {
   currentDateTime: Date | null;
   kind?: "invoice" | "quote";
   printOpts: PrintFormatsConfig;
+  /** When true, customer.balance already includes this invoice's remaining (reprint). */
+  balanceIncludesInvoice?: boolean;
 }
 
 function InvoiceContent({
@@ -311,6 +316,7 @@ function InvoiceContent({
   currentDateTime,
   kind = "invoice",
   printOpts,
+  balanceIncludesInvoice = false,
 }: InvoiceContentProps) {
   const isQuote = kind === "quote";
   const headerLine = isQuote ? "عرض سعر" : invoiceTagline;
@@ -322,6 +328,15 @@ function InvoiceContent({
     printOpts.show_address && (storeAddress || storePhone);
   const showTax =
     printOpts.show_tax_info && (taxNumber || commercialRegister);
+  const invoiceRemaining = Math.max(0, total - paid);
+  const customerBalance = Number(customer?.balance) || 0;
+  // Reprint from history: balance already posted. Fresh POS save: balance is pre-posting.
+  const previousCustomerBalance = balanceIncludesInvoice
+    ? customerBalance - invoiceRemaining
+    : customerBalance;
+  const newCustomerBalance = balanceIncludesInvoice
+    ? customerBalance
+    : customerBalance + invoiceRemaining;
 
   return (
     <div className={`print-paper w-full text-black flex flex-col ${fonts.body}`} dir="rtl">
@@ -505,19 +520,22 @@ function InvoiceContent({
         )}
 
         {/* الحساب الإجمالي للعميل في العمليات الآجلة */}
-        {!isQuote && customer && (paymentMethod === "credit" || total - paid > 0) && (
+        {!isQuote &&
+          customer &&
+          invoiceRemaining > 0.001 &&
+          (paymentMethod === "credit" || total - paid > 0) && (
           <div className={`receipt-divider-top mt-2 pt-1.5 space-y-1 ${fonts.meta}`}>
             <div className="flex justify-between text-slate-600">
               <span>الحساب السابق للعميل:</span>
-              <span className="font-semibold">{formatCurrency(customer.balance)}</span>
+              <span className="font-semibold">{formatCurrency(previousCustomerBalance)}</span>
             </div>
             <div className="flex justify-between text-slate-600">
               <span>حساب هذه الفاتورة (آجل):</span>
-              <span className="font-semibold text-red-600">+{formatCurrency(total - paid)}</span>
+              <span className="font-semibold text-red-600">+{formatCurrency(invoiceRemaining)}</span>
             </div>
             <div className="flex justify-between font-bold text-slate-900 text-[10px]">
               <span>إجمالي الحساب الجديد للعميل:</span>
-              <span>{formatCurrency(Number(customer.balance) + (total - paid))}</span>
+              <span>{formatCurrency(newCustomerBalance)}</span>
             </div>
           </div>
         )}
