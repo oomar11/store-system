@@ -445,6 +445,10 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
   const allVisibleDetailsExpanded =
     visibleInvoiceRows.length > 0 &&
     visibleInvoiceRows.every((row) => expandedInvoiceIds[row.id]);
+  const expandedVisibleCount = visibleInvoiceRows.reduce(
+    (count, row) => (expandedInvoiceIds[row.id] ? count + 1 : count),
+    0
+  );
 
   async function expandAllVisibleInvoiceDetails() {
     if (visibleInvoiceRows.length === 0) return;
@@ -726,6 +730,9 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
             >
               إخفاء الكل
             </button>
+            <span className="rounded-lg border border-[#e1e6ee] bg-[#f8fafc] px-2.5 py-1.5 text-[11px] font-bold text-[#526176]">
+              التفاصيل المفتوحة: {expandedVisibleCount}/{visibleInvoiceRows.length}
+            </span>
             <input
               type="text"
               placeholder="بحث برقم المستند..."
