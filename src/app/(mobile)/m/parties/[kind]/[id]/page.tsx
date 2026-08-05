@@ -332,12 +332,12 @@ export default function MobilePartyDetailPage() {
               {party.phone ? (
                 <p className="mobile-money-hero__note">{party.phone}</p>
               ) : null}
-              {canPay && openTotal > 0.001 && safes.length > 0 ? (
+              {canPay && safes.length > 0 ? (
                 <button
                   type="button"
                   className="mobile-btn mobile-btn--primary mt-3"
                   onClick={() => {
-                    setAmount(String(openTotal));
+                    setAmount(openTotal > 0.001 ? String(openTotal) : "");
                     setPayError("");
                     setPayOpen(true);
                   }}

@@ -626,17 +626,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => {
-              if (unpaidInvoicesCount === 0) {
-                toastInfo(
-                  kind === "customer"
-                    ? "لا توجد فواتير بيع غير مسددة لهذا العميل."
-                    : "لا توجد فواتير شراء غير مسددة لهذا المورد."
-                );
-                return;
-              }
-              router.push(paymentHref());
-            }}
+            onClick={() => router.push(paymentHref())}
             className="inline-flex items-center gap-1.5 rounded-xl bg-[#1473e6] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#0b5fc4]"
           >
             <Wallet className="h-4 w-4" />
