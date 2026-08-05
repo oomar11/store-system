@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase";
@@ -28,6 +28,11 @@ import { PrintListButton } from "@/components/print/PrintListButton";
 import { EntityStatementPreview } from "@/components/print/EntityStatementPreview";
 import { PartyPaymentPrintPreview } from "@/components/print/PartyPaymentPrintPreview";
 import {
+  DocumentPrintPreview,
+  type DocumentPrintKind,
+  type PrintLineItem,
+} from "@/components/print/DocumentPrintPreview";
+import {
   partyHistoryColumns,
   partyPaymentPrintColumns,
 } from "@/components/print/report-columns";
@@ -39,6 +44,8 @@ import {
 } from "@/lib/offline";
 import {
   ArrowRight,
+  ChevronDown,
+  ChevronUp,
   Copy,
   ExternalLink,
   Printer,
@@ -49,6 +56,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
+import { useAuth } from "@/hooks/useAuth";
 
 type PartyKind = "customer" | "supplier";
 type TypeFilter =
@@ -66,9 +74,38 @@ interface PartyDetailPageProps {
   partyId: string;
 }
 
+type InvoiceItemDetail = {
+  id: string;
+  quantity: number;
+  unit_price: number;
+  discount: number;
+  total: number;
+  product?: {
+    name?: string;
+    sku?: string;
+  } | null;
+};
+
+type InlineInvoicePrintState = {
+  kind: DocumentPrintKind;
+  documentNumber: string;
+  items: PrintLineItem[];
+  partyName?: string;
+  partyPhone?: string;
+  subtotal: number;
+  discount: number;
+  taxAmount: number;
+  total: number;
+  paid: number;
+  paymentMethod?: string;
+  notes?: string;
+  issuedAt: string;
+};
+
 export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
   const router = useRouter();
   const supabase = createClient();
+  const { profile } = useAuth();
   const { info: toastInfo, success: toastSuccess, error: toastError } = useToast();
   const { confirm } = useConfirm();
   const listHref = kind === "customer" ? "/customers" : "/suppliers";
@@ -93,6 +130,18 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
     null
   );
   const [showPaymentsPrint, setShowPaymentsPrint] = useState(false);
+  const [expandedInvoiceIds, setExpandedInvoiceIds] = useState<Record<string, boolean>>(
+    {}
+  );
+  const [invoiceItemsByInvoiceId, setInvoiceItemsByInvoiceId] = useState<
+    Record<string, InvoiceItemDetail[]>
+  >({});
+  const [itemsLoadingByInvoiceId, setItemsLoadingByInvoiceId] = useState<
+    Record<string, boolean>
+  >({});
+  const [inlinePrintState, setInlinePrintState] =
+    useState<InlineInvoicePrintState | null>(null);
+  const [inlinePrintLoadingId, setInlinePrintLoadingId] = useState<string | null>(null);
 
   function paymentHref(paymentId?: string) {
     const base =
@@ -103,6 +152,12 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
   }
 
   async function refreshData() {
+    setExpandedInvoiceIds({});
+    setInvoiceItemsByInvoiceId({});
+    setItemsLoadingByInvoiceId({});
+    setInlinePrintState(null);
+    setInlinePrintLoadingId(null);
+
     // Local-first: party header from snapshot when offline / slow net
     if (!isBrowserOnline()) {
       const snap = await getSnapshot();
@@ -214,6 +269,110 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
         if (snap?.settings) setSettings(snap.settings as unknown as Settings);
       }
       setLoading(false);
+    }
+  }
+
+  function isInvoiceRow(row: PartyInvoiceRow) {
+    return (
+      row.type === "sale" ||
+      row.type === "purchase" ||
+      row.type === "sale_return" ||
+      row.type === "purchase_return"
+    );
+  }
+
+  async function loadInvoiceItems(invoiceId: string) {
+    if (invoiceItemsByInvoiceId[invoiceId] || itemsLoadingByInvoiceId[invoiceId]) return;
+    setItemsLoadingByInvoiceId((prev) => ({ ...prev, [invoiceId]: true }));
+    try {
+      const { data, error } = await supabase
+        .from("invoice_items")
+        .select("id, quantity, unit_price, discount, total, product:products(name, sku)")
+        .eq("invoice_id", invoiceId)
+        .order("id", { ascending: true });
+      if (error) throw error;
+      setInvoiceItemsByInvoiceId((prev) => ({
+        ...prev,
+        [invoiceId]: (data || []) as unknown as InvoiceItemDetail[],
+      }));
+    } catch {
+      toastError("تعذر تحميل تفاصيل الفاتورة");
+    } finally {
+      setItemsLoadingByInvoiceId((prev) => ({ ...prev, [invoiceId]: false }));
+    }
+  }
+
+  async function toggleInvoiceDetails(row: PartyInvoiceRow) {
+    if (!isInvoiceRow(row)) return;
+    const isExpanded = !!expandedInvoiceIds[row.id];
+    if (isExpanded) {
+      setExpandedInvoiceIds((prev) => ({ ...prev, [row.id]: false }));
+      return;
+    }
+    setExpandedInvoiceIds((prev) => ({ ...prev, [row.id]: true }));
+    await loadInvoiceItems(row.id);
+  }
+
+  async function printInvoiceDetails(row: PartyInvoiceRow) {
+    if (!isInvoiceRow(row) || inlinePrintLoadingId) return;
+    setInlinePrintLoadingId(row.id);
+    try {
+      const [{ data: invoice, error: invErr }, { data: lines, error: linesErr }] =
+        await Promise.all([
+          supabase
+            .from("invoices")
+            .select(
+              "*, customer:customers(name, phone), supplier:suppliers(name, phone)"
+            )
+            .eq("id", row.id)
+            .single(),
+          supabase
+            .from("invoice_items")
+            .select("*, product:products(name, sku)")
+            .eq("invoice_id", row.id),
+        ]);
+      if (invErr || !invoice) throw new Error(invErr?.message || "الفاتورة غير موجودة");
+      if (linesErr) throw new Error(linesErr.message);
+
+      const printKind = invoice.type as DocumentPrintKind;
+      if (
+        printKind !== "sale" &&
+        printKind !== "purchase" &&
+        printKind !== "sale_return" &&
+        printKind !== "purchase_return"
+      ) {
+        throw new Error("نوع الفاتورة غير مدعوم للطباعة التفصيلية");
+      }
+
+      setInlinePrintState({
+        kind: printKind,
+        documentNumber: String(invoice.invoice_number || row.invoice_number),
+        items:
+          (lines || []).map((line) => ({
+            name: line.product?.name || "صنف",
+            sku: line.product?.sku || "",
+            quantity: Number(line.quantity),
+            unit_price: Number(line.unit_price),
+            discount: Number(line.discount) || 0,
+            total: Number(line.total),
+          })) || [],
+        partyName: invoice.customer?.name || invoice.supplier?.name || party?.name,
+        partyPhone: invoice.customer?.phone || invoice.supplier?.phone || party?.phone,
+        subtotal:
+          Number(invoice.subtotal) ||
+          (lines || []).reduce((sum, line) => sum + Number(line.total), 0),
+        discount: Number(invoice.discount_amount) || 0,
+        taxAmount: Number(invoice.tax_amount) || 0,
+        total: Number(invoice.total) || 0,
+        paid: Number(invoice.paid_amount) || 0,
+        paymentMethod: invoice.payment_method || undefined,
+        notes: invoice.notes || undefined,
+        issuedAt: String(invoice.created_at || row.created_at),
+      });
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "تعذر تجهيز الفاتورة للطباعة");
+    } finally {
+      setInlinePrintLoadingId(null);
     }
   }
 
@@ -580,57 +739,172 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
                     row.type === "disbursement"
                       ? null
                       : Number(row.total) - Number(row.paid_amount);
+                  const canShowDetails = isInvoiceRow(row);
+                  const isExpanded = !!expandedInvoiceIds[row.id];
+                  const detailItems = invoiceItemsByInvoiceId[row.id] || [];
+                  const detailsLoading = !!itemsLoadingByInvoiceId[row.id];
                   return (
-                    <tr
-                      key={row.id}
-                      onClick={() => openOperation(row)}
-                      className="cursor-pointer hover:bg-[#eef6ff]"
-                      title={
-                        row.isPartyPayment
-                          ? "فتح تفاصيل التحصيل/السداد"
-                          : "اختر العملية"
-                      }
-                    >
-                      <td className="px-3 py-2.5 text-[#526176]">
-                        {formatDateShort(row.created_at)}
-                      </td>
-                      <td className="px-3 py-2.5 font-mono text-xs font-semibold text-[#1473e6]">
-                        {row.invoice_number}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        {invoiceTypeLabel(row.type)}
-                        {row.notes &&
-                        (row.type === "opening" || row.isPartyPayment) ? (
-                          <span className="mt-0.5 block text-[11px] text-[#687386]">
-                            {row.notes}
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="px-3 py-2.5 font-semibold">
-                        {row.type === "collection" ||
-                        row.type === "disbursement"
-                          ? "—"
-                          : formatCurrency(row.total)}
-                      </td>
-                      <td className="px-3 py-2.5 text-emerald-700">
-                        {row.type === "opening"
-                          ? "—"
-                          : formatCurrency(row.paid_amount)}
-                      </td>
-                      <td className="px-3 py-2.5 font-semibold text-rose-700">
-                        {remaining === null ? "—" : formatCurrency(remaining)}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <span className="inline-flex items-center gap-1 rounded-lg border border-[#9ec5f5] bg-[#eaf4ff] px-2 py-1 text-[11px] font-bold text-[#0b5fc4]">
-                          {row.isPartyPayment ? (
-                            <ExternalLink className="h-3.5 w-3.5" />
-                          ) : (
-                            <ExternalLink className="h-3.5 w-3.5" />
-                          )}
-                          {row.isPartyPayment ? "فتح" : "اختيار"}
-                        </span>
-                      </td>
-                    </tr>
+                    <Fragment key={row.id}>
+                      <tr
+                        onClick={() => openOperation(row)}
+                        className="cursor-pointer hover:bg-[#eef6ff]"
+                        title={
+                          row.isPartyPayment
+                            ? "فتح تفاصيل التحصيل/السداد"
+                            : "اختر العملية"
+                        }
+                      >
+                        <td className="px-3 py-2.5 text-[#526176]">
+                          {formatDateShort(row.created_at)}
+                        </td>
+                        <td className="px-3 py-2.5 font-mono text-xs font-semibold text-[#1473e6]">
+                          {row.invoice_number}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          {invoiceTypeLabel(row.type)}
+                          {row.notes &&
+                          (row.type === "opening" || row.isPartyPayment) ? (
+                            <span className="mt-0.5 block text-[11px] text-[#687386]">
+                              {row.notes}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="px-3 py-2.5 font-semibold">
+                          {row.type === "collection" ||
+                          row.type === "disbursement"
+                            ? "—"
+                            : formatCurrency(row.total)}
+                        </td>
+                        <td className="px-3 py-2.5 text-emerald-700">
+                          {row.type === "opening"
+                            ? "—"
+                            : formatCurrency(row.paid_amount)}
+                        </td>
+                        <td className="px-3 py-2.5 font-semibold text-rose-700">
+                          {remaining === null ? "—" : formatCurrency(remaining)}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <div className="flex items-center gap-1.5">
+                            <span className="inline-flex items-center gap-1 rounded-lg border border-[#9ec5f5] bg-[#eaf4ff] px-2 py-1 text-[11px] font-bold text-[#0b5fc4]">
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              {row.isPartyPayment ? "فتح" : "اختيار"}
+                            </span>
+                            {canShowDetails ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void toggleInvoiceDetails(row);
+                                }}
+                                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-100"
+                                title={isExpanded ? "إخفاء التفاصيل" : "عرض التفاصيل"}
+                              >
+                                {isExpanded ? (
+                                  <ChevronUp className="h-3.5 w-3.5" />
+                                ) : (
+                                  <ChevronDown className="h-3.5 w-3.5" />
+                                )}
+                                {isExpanded ? "إخفاء" : "تفاصيل"}
+                              </button>
+                            ) : null}
+                          </div>
+                        </td>
+                      </tr>
+                      {canShowDetails && isExpanded ? (
+                        <tr className="bg-[#fbfdff]">
+                          <td colSpan={7} className="px-4 py-3">
+                            <div className="rounded-xl border border-[#dce8f8] bg-white p-3">
+                              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                <p className="text-xs font-bold text-[#35506f]">
+                                  تفاصيل البنود — {row.invoice_number}
+                                </p>
+                                <button
+                                  type="button"
+                                  disabled={inlinePrintLoadingId === row.id}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void printInvoiceDetails(row);
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+                                >
+                                  <Printer className="h-3.5 w-3.5" />
+                                  {inlinePrintLoadingId === row.id
+                                    ? "جاري التحضير..."
+                                    : "طباعة تفصيلية"}
+                                </button>
+                              </div>
+
+                              {detailsLoading ? (
+                                <p className="text-xs text-[#687386]">
+                                  جاري تحميل بنود الفاتورة...
+                                </p>
+                              ) : detailItems.length === 0 ? (
+                                <p className="text-xs text-[#687386]">
+                                  لا توجد بنود مسجلة لهذه الفاتورة
+                                </p>
+                              ) : (
+                                <div className="overflow-auto">
+                                  <table className="w-full border-collapse text-xs">
+                                    <thead className="bg-[#f7faff] text-[#526176]">
+                                      <tr>
+                                        <th className="px-2 py-1.5 text-right font-semibold">
+                                          الصنف
+                                        </th>
+                                        <th className="px-2 py-1.5 text-right font-semibold">
+                                          الكمية
+                                        </th>
+                                        <th className="px-2 py-1.5 text-right font-semibold">
+                                          سعر الوحدة
+                                        </th>
+                                        <th className="px-2 py-1.5 text-right font-semibold">
+                                          الخصم
+                                        </th>
+                                        <th className="px-2 py-1.5 text-right font-semibold">
+                                          الإجمالي
+                                        </th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-[#eef1f6]">
+                                      {detailItems.map((item) => (
+                                        <tr key={item.id}>
+                                          <td className="px-2 py-1.5">
+                                            <span className="font-semibold text-[#172033]">
+                                              {item.product?.name || "صنف"}
+                                            </span>
+                                            {item.product?.sku ? (
+                                              <span
+                                                className="mt-0.5 block font-mono text-[10px] text-[#7a8699]"
+                                                dir="ltr"
+                                              >
+                                                {item.product.sku}
+                                              </span>
+                                            ) : null}
+                                          </td>
+                                          <td className="px-2 py-1.5">
+                                            {Number(item.quantity)}
+                                          </td>
+                                          <td className="px-2 py-1.5">
+                                            {formatCurrency(Number(item.unit_price))}
+                                          </td>
+                                          <td className="px-2 py-1.5 text-rose-700">
+                                            {Number(item.discount) > 0
+                                              ? formatCurrency(Number(item.discount))
+                                              : "—"}
+                                          </td>
+                                          <td className="px-2 py-1.5 font-semibold text-[#172033]">
+                                            {formatCurrency(Number(item.total))}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -823,6 +1097,27 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           party={party}
           settings={settings}
           onClose={() => setShowStatement(false)}
+        />
+      )}
+
+      {inlinePrintState && (
+        <DocumentPrintPreview
+          kind={inlinePrintState.kind}
+          documentNumber={inlinePrintState.documentNumber}
+          items={inlinePrintState.items}
+          partyName={inlinePrintState.partyName}
+          partyPhone={inlinePrintState.partyPhone}
+          subtotal={inlinePrintState.subtotal}
+          discount={inlinePrintState.discount}
+          taxAmount={inlinePrintState.taxAmount}
+          total={inlinePrintState.total}
+          paid={inlinePrintState.paid}
+          paymentMethod={inlinePrintState.paymentMethod}
+          notes={inlinePrintState.notes}
+          cashierName={profile?.full_name || "الكاشير"}
+          settings={settings}
+          issuedAt={inlinePrintState.issuedAt}
+          onClose={() => setInlinePrintState(null)}
         />
       )}
     </div>
