@@ -1,9 +1,13 @@
 import { createHash, timingSafeEqual } from "crypto";
 import type { NextRequest } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { tryCreateServiceClient } from "@/lib/supabase-service";
 
-/** Env secret that the UPVC workshop (aa) uses to post into store safes. */
-export function getWorkshopBridgeSecret(): string {
+const BRIDGE_CONFIG_ID = "c0000000-0000-0000-0000-000000000001";
+
+let cachedDbSecret: string | null | undefined;
+
+function envWorkshopBridgeSecret(): string {
   return (
     process.env.WORKSHOP_BRIDGE_SECRET?.trim() ||
     process.env.STORE_WORKSHOP_BRIDGE_SECRET?.trim() ||
@@ -11,24 +15,40 @@ export function getWorkshopBridgeSecret(): string {
   );
 }
 
-export function isWorkshopBridgeConfigured(): boolean {
-  return Boolean(getWorkshopBridgeSecret());
+/** Resolve bridge secret: Vercel env first, then workshop_bridge_config row. */
+export async function resolveWorkshopBridgeSecret(): Promise<string> {
+  const fromEnv = envWorkshopBridgeSecret();
+  if (fromEnv) return fromEnv;
+
+  if (cachedDbSecret !== undefined) return cachedDbSecret || "";
+
+  try {
+    const client = await tryCreateServiceClient();
+    if (!client) {
+      cachedDbSecret = null;
+      return "";
+    }
+    const { data } = await client
+      .from("workshop_bridge_config")
+      .select("bridge_secret")
+      .eq("id", BRIDGE_CONFIG_ID)
+      .maybeSingle();
+    const secret = String(data?.bridge_secret || "").trim();
+    cachedDbSecret = secret || null;
+    return secret;
+  } catch (e) {
+    console.error("resolveWorkshopBridgeSecret", e);
+    cachedDbSecret = null;
+    return "";
+  }
 }
 
-/** Authorize workshop bridge calls (Bearer or x-workshop-bridge-secret). */
-export function requireWorkshopBridgeSecret(request: NextRequest): boolean {
-  const expected = getWorkshopBridgeSecret();
-  if (!expected) return false;
+export async function isWorkshopBridgeConfigured(): Promise<boolean> {
+  return Boolean(await resolveWorkshopBridgeSecret());
+}
 
-  const header =
-    request.headers.get("x-workshop-bridge-secret")?.trim() || "";
-  const auth = request.headers.get("authorization")?.trim() || "";
-  const bearer = auth.toLowerCase().startsWith("bearer ")
-    ? auth.slice(7).trim()
-    : "";
-  const provided = header || bearer;
-  if (!provided) return false;
-
+function secretsEqual(provided: string, expected: string): boolean {
+  if (!provided || !expected) return false;
   const a = Buffer.from(provided);
   const b = Buffer.from(expected);
   if (a.length !== b.length) return false;
@@ -37,6 +57,22 @@ export function requireWorkshopBridgeSecret(request: NextRequest): boolean {
   } catch {
     return false;
   }
+}
+
+/** Authorize workshop bridge calls (Bearer or x-workshop-bridge-secret). */
+export async function requireWorkshopBridgeSecret(
+  request: NextRequest
+): Promise<boolean> {
+  const expected = await resolveWorkshopBridgeSecret();
+  if (!expected) return false;
+
+  const header =
+    request.headers.get("x-workshop-bridge-secret")?.trim() || "";
+  const auth = request.headers.get("authorization")?.trim() || "";
+  const bearer = auth.toLowerCase().startsWith("bearer ")
+    ? auth.slice(7).trim()
+    : "";
+  return secretsEqual(header || bearer, expected);
 }
 
 /**

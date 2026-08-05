@@ -50,7 +50,7 @@ Always verify changes on this host (not `store-system-iota` or Preview URLs).
 - `SUPABASE_SERVICE_ROLE_KEY`  ← ضروري لقراءة إعدادات تيليجرام وبيانات المحل
 - (اختياري) `GEMINI_API_KEY` — أو يُحفظ من تيليجرام `/gemini` / الإعدادات
 - (اختياري) `TELEGRAM_WEBHOOK_SECRET`
-- (اختياري) `WORKSHOP_BRIDGE_SECRET` ← جسر خزنة الورشة (aa): نفس المفتاح في إعدادات الورشة
+- (اختياري) `WORKSHOP_BRIDGE_SECRET` ← بديل لجدول `workshop_bridge_config`
 
 بعد إضافة المتغيرات: Redeploy، ثم الإعدادات → مساعد جارفس → تفعيل المساعد.  
 فحص سريع: `GET https://store-system-rho.vercel.app/api/telegram/webhook` لازم يرجّع `telegram_configured: true`.
@@ -58,8 +58,9 @@ Always verify changes on this host (not `store-system-iota` or Preview URLs).
 ### جسر خزنة الورشة (aa → store)
 - المتجر وخزنته = مصدر الحقيقة للنقد؛ الورشة ترسل دفعات (إيداع) ومصروفات (سحب).
 - APIs: `GET /api/workshop/safes` · `POST /api/workshop/safe-movement` · `GET /api/workshop/safe-movement` (حالة `configured`)
-- المصادقة: `Authorization: Bearer <WORKSHOP_BRIDGE_SECRET>` أو هيدر `x-workshop-bridge-secret`
-- Migration: `20260805_workshop_safe_bridge.sql` (`apply_workshop_safe_movement`)
+- المصادقة: `Authorization: Bearer <secret>` أو هيدر `x-workshop-bridge-secret`
+- المفتاح من: جدول `workshop_bridge_config` (مضبوط) أو متغير `WORKSHOP_BRIDGE_SECRET`
+- Migration: `20260805_workshop_safe_bridge.sql` + `20260805_workshop_bridge_config.sql`
 
 ## Commit Attribution
 AI commits MUST include:

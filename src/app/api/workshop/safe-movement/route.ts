@@ -41,11 +41,11 @@ type Body = {
 
 /** Upsert/void a workshop payment or expense into store treasury. */
 export async function POST(request: NextRequest) {
-  if (!isWorkshopBridgeConfigured()) {
+  if (!(await isWorkshopBridgeConfigured())) {
     return withCors(
       NextResponse.json(
         {
-          error: "جسر الورشة غير مضبوط — أضف WORKSHOP_BRIDGE_SECRET على Vercel",
+          error: "جسر الورشة غير مضبوط — أضف المفتاح في workshop_bridge_config أو WORKSHOP_BRIDGE_SECRET",
           configured: false,
         },
         { status: 503 }
@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!requireWorkshopBridgeSecret(request)) {
+  if (!(await requireWorkshopBridgeSecret(request))) {
     return withCors(
       NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     );
@@ -160,7 +160,7 @@ export async function GET() {
   return withCors(
     NextResponse.json({
       service: "workshop-safe-bridge",
-      configured: isWorkshopBridgeConfigured(),
+      configured: await isWorkshopBridgeConfigured(),
     })
   );
 }

@@ -27,11 +27,11 @@ export async function OPTIONS() {
 
 /** List active safes for workshop bridge setup. */
 export async function GET(request: NextRequest) {
-  if (!isWorkshopBridgeConfigured()) {
+  if (!(await isWorkshopBridgeConfigured())) {
     return withCors(
       NextResponse.json(
         {
-          error: "جسر الورشة غير مضبوط — أضف WORKSHOP_BRIDGE_SECRET على Vercel",
+          error: "جسر الورشة غير مضبوط — أضف المفتاح في workshop_bridge_config أو WORKSHOP_BRIDGE_SECRET",
           configured: false,
         },
         { status: 503 }
@@ -39,7 +39,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  if (!requireWorkshopBridgeSecret(request)) {
+  if (!(await requireWorkshopBridgeSecret(request))) {
     return withCors(
       NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     );
