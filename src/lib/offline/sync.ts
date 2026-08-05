@@ -339,6 +339,7 @@ async function pushDomainOp(
       createdAt: (p.occurredAt as string) || entry.created_at,
       originalInvoiceId: (p.originalInvoiceId as string) || null,
       clientOpId: entry.id,
+      forWorkshop: Boolean(p.forWorkshop),
     });
     await markOutboxSynced(entry.id, {
       id: result.id,

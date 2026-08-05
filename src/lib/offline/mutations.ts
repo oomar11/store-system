@@ -85,6 +85,7 @@ export async function createInvoiceOnlineOrQueue(
     safeId: input.safeId,
     notes: input.notes,
     originalInvoiceId: input.originalInvoiceId,
+    forWorkshop: Boolean(input.forWorkshop),
     tempNumber,
     label:
       input.type === "sale"

@@ -31,6 +31,8 @@ export type CreateCompletedInvoiceInput = {
   originalInvoiceId?: string | null;
   /** Idempotency key for offline sync / retries */
   clientOpId?: string | null;
+  /** Flag sale for workshop inbox (project expense assignment later) */
+  forWorkshop?: boolean;
 };
 
 export type CreateCompletedInvoiceResult = {
@@ -112,8 +114,27 @@ export async function createCompletedInvoice(
     );
   }
 
+  if (input.forWorkshop && input.type === "sale") {
+    await enqueueWorkshopInvoice(supabase, String(row.id));
+  }
+
   return {
     id: String(row.id),
     invoice_number: String(row.invoice_number),
   };
+}
+
+/** Push a completed sale into the workshop assignment inbox. */
+export async function enqueueWorkshopInvoice(
+  supabase: SupabaseClient,
+  invoiceId: string
+): Promise<void> {
+  const { error } = await supabase.rpc("enqueue_workshop_invoice", {
+    p_invoice_id: invoiceId,
+  });
+  if (error) {
+    throw new Error(
+      formatRpcError(error.message, "تعذر إرسال الفاتورة لصندوق الورشة")
+    );
+  }
 }

@@ -58,9 +58,10 @@ Always verify changes on this host (not `store-system-iota` or Preview URLs).
 ### جسر خزنة الورشة (aa → store)
 - المتجر وخزنته = مصدر الحقيقة للنقد؛ الورشة ترسل دفعات (إيداع) ومصروفات (سحب).
 - APIs: `GET /api/workshop/safes` · `POST /api/workshop/safe-movement` · `GET /api/workshop/safe-movement` (حالة `configured`)
+- فواتير للورشة: `GET|POST /api/workshop/invoices` + جدول `workshop_invoice_inbox` (علامة «للورشة» في POS)
 - المصادقة: `Authorization: Bearer <secret>` أو هيدر `x-workshop-bridge-secret`
 - المفتاح من: جدول `workshop_bridge_config` (مضبوط) أو متغير `WORKSHOP_BRIDGE_SECRET`
-- Migration: `20260805_workshop_safe_bridge.sql` + `20260805_workshop_bridge_config.sql`
+- Migration: `20260805_workshop_safe_bridge.sql` + `20260805_workshop_bridge_config.sql` + `20260805_workshop_invoice_inbox.sql`
 
 ## Commit Attribution
 AI commits MUST include:

@@ -267,6 +267,7 @@ export default function POSPage({
     "buy"
   );
   const [notes, setNotes] = useState("");
+  const [forWorkshop, setForWorkshop] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [showInvoice, setShowInvoice] = useState(false);
@@ -1481,6 +1482,7 @@ export default function POSPage({
     setPaidAmount(0);
     setDiscount(0);
     setNotes("");
+    setForWorkshop(false);
     setValidUntil("");
     setExpectedDate("");
     setEditingInvoiceId(null);
@@ -1668,6 +1670,7 @@ export default function POSPage({
     setDiscount(0);
     setDiscountType("amount");
     setNotes("");
+    setForWorkshop(false);
     setValidUntil("");
     setExpectedDate("");
   }
@@ -2065,6 +2068,7 @@ export default function POSPage({
           safeId: needsSafe ? selectedSafeId : null,
           notes: notes || null,
           createdAt: new Date().toISOString(),
+          forWorkshop,
         });
 
         setLastInvoice(invoice.invoice_number);
@@ -2072,7 +2076,9 @@ export default function POSPage({
         toastSuccess(
           invoice.offline
             ? `تم الحفظ أوفلاين ${invoice.invoice_number} — سيُزامن عند عودة النت`
-            : `تم حفظ الفاتورة ${invoice.invoice_number}`
+            : forWorkshop
+              ? `تم حفظ الفاتورة ${invoice.invoice_number} وإرسالها لصندوق الورشة`
+              : `تم حفظ الفاتورة ${invoice.invoice_number}`
         );
         void Promise.all([
           fetchProducts(),
@@ -2413,6 +2419,7 @@ export default function POSPage({
     setDiscount(0);
     setDiscountType("amount");
     setNotes("");
+    setForWorkshop(false);
     setValidUntil("");
     setExpectedDate("");
     setShowInvoice(false);
@@ -3675,6 +3682,23 @@ export default function POSPage({
                 </button>
               </div>
 
+              {mode === "sale" && !editingInvoiceId ? (
+                <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2.5">
+                  <span className="text-sm font-semibold text-violet-900">
+                    للورشة
+                    <span className="mt-0.5 block text-[11px] font-normal text-violet-700/80">
+                      تظهر في صندوق وارد الورشة لتعيينها على شغلانة
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={forWorkshop}
+                    onChange={(e) => setForWorkshop(e.target.checked)}
+                    className="h-5 w-5 accent-violet-700"
+                  />
+                </label>
+              ) : null}
+
               <div className="flex flex-col gap-1">
                 <div className="flex items-center gap-2">
                   <input
@@ -3922,6 +3946,12 @@ export default function POSPage({
                   </dd>
                 </div>
               )}
+              {mode === "sale" && forWorkshop ? (
+                <div className="flex justify-between gap-3 border-t border-[#e5eaf1] pt-2">
+                  <dt className="text-[#687386]">للورشة</dt>
+                  <dd className="font-bold text-violet-700">نعم — صندوق الوارد</dd>
+                </div>
+              ) : null}
             </dl>
             <div className="flex gap-2">
               <button

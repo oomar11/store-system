@@ -84,6 +84,8 @@ export type OutboxInvoicePayload = {
   safeId?: string | null;
   notes?: string | null;
   originalInvoiceId?: string | null;
+  /** Sale flagged for workshop inbox */
+  forWorkshop?: boolean;
   tempNumber: string;
   label?: string;
   occurredAt?: string;
