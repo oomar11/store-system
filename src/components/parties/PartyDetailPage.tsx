@@ -431,6 +431,39 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
       ]);
     });
   }, [rows, searchTerm, typeFilter]);
+  const visibleInvoiceRows = useMemo(
+    () =>
+      filtered.filter(
+        (row) =>
+          row.type === "sale" ||
+          row.type === "purchase" ||
+          row.type === "sale_return" ||
+          row.type === "purchase_return"
+      ),
+    [filtered]
+  );
+  const allVisibleDetailsExpanded =
+    visibleInvoiceRows.length > 0 &&
+    visibleInvoiceRows.every((row) => expandedInvoiceIds[row.id]);
+
+  async function expandAllVisibleInvoiceDetails() {
+    if (visibleInvoiceRows.length === 0) return;
+    setExpandedInvoiceIds((prev) => {
+      const next = { ...prev };
+      for (const row of visibleInvoiceRows) next[row.id] = true;
+      return next;
+    });
+    await Promise.all(visibleInvoiceRows.map((row) => loadInvoiceItems(row.id)));
+  }
+
+  function collapseAllVisibleInvoiceDetails() {
+    if (visibleInvoiceRows.length === 0) return;
+    setExpandedInvoiceIds((prev) => {
+      const next = { ...prev };
+      for (const row of visibleInvoiceRows) next[row.id] = false;
+      return next;
+    });
+  }
 
   const totalAmount = filtered
     .filter(
@@ -673,6 +706,26 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
               rowCount={filtered.length}
               label="طباعة الحركة"
             />
+            <button
+              type="button"
+              disabled={visibleInvoiceRows.length === 0}
+              onClick={() => {
+                void expandAllVisibleInvoiceDetails();
+              }}
+              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+              title="عرض تفاصيل كل الفواتير الظاهرة"
+            >
+              عرض التفاصيل للكل
+            </button>
+            <button
+              type="button"
+              disabled={visibleInvoiceRows.length === 0 || !allVisibleDetailsExpanded}
+              onClick={collapseAllVisibleInvoiceDetails}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              title="إخفاء تفاصيل كل الفواتير الظاهرة"
+            >
+              إخفاء الكل
+            </button>
             <input
               type="text"
               placeholder="بحث برقم المستند..."
