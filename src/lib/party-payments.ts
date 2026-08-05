@@ -161,8 +161,10 @@ export type ApplyPartyPaymentParams = {
 };
 
 /**
- * Collect from customer / pay supplier: one payment row, FIFO allocations,
- * one safe movement, and balance decrease.
+ * Collect from customer / pay supplier: one payment row, FIFO allocations
+ * when open invoices exist, one safe movement, and balance decrease.
+ * Any unallocated amount (no invoices / amount above open total) stays as
+ * party account credit (balance decreases by the full amount).
  */
 export async function applyPartyPayment(
   supabase: SupabaseClient,
@@ -177,26 +179,7 @@ export async function applyPartyPayment(
     params.kind,
     params.partyId
   );
-  const { allocations, totalOpen, leftover } = previewFifoAllocation(
-    open,
-    amount
-  );
-
-  if (open.length === 0) {
-    throw new Error(
-      params.kind === "customer"
-        ? "لا توجد فواتير بيع غير مسددة لهذا العميل."
-        : "لا توجد فواتير شراء غير مسددة لهذا المورد."
-    );
-  }
-  if (leftover > 0.001) {
-    throw new Error(
-      `المبلغ أكبر من إجمالي المتبقي (${totalOpen.toFixed(2)}).`
-    );
-  }
-  if (allocations.length === 0) {
-    throw new Error("تعذر توزيع المبلغ على الفواتير.");
-  }
+  const { allocations } = previewFifoAllocation(open, amount);
 
   const {
     data: { user },
@@ -226,19 +209,21 @@ export async function applyPartyPayment(
 
   const paymentId = payment.id as string;
 
-  const { error: allocErr } = await supabase
-    .from("party_payment_allocations")
-    .insert(
-      allocations.map((a) => ({
-        payment_id: paymentId,
-        invoice_id: a.invoiceId,
-        amount: a.amount,
-      }))
-    );
+  if (allocations.length > 0) {
+    const { error: allocErr } = await supabase
+      .from("party_payment_allocations")
+      .insert(
+        allocations.map((a) => ({
+          payment_id: paymentId,
+          invoice_id: a.invoiceId,
+          amount: a.amount,
+        }))
+      );
 
-  if (allocErr) {
-    await supabase.from("party_payments").delete().eq("id", paymentId);
-    throw new Error(mapDbError(allocErr.message, "تعذر تسجيل توزيع الدفعة"));
+    if (allocErr) {
+      await supabase.from("party_payments").delete().eq("id", paymentId);
+      throw new Error(mapDbError(allocErr.message, "تعذر تسجيل توزيع الدفعة"));
+    }
   }
 
   for (const a of allocations) {
@@ -437,26 +422,7 @@ export async function updatePartyPayment(
     payment.party_id as string,
     { creditAllocations }
   );
-  const { allocations, totalOpen, leftover } = previewFifoAllocation(
-    open,
-    newAmount
-  );
-
-  if (open.length === 0) {
-    throw new Error(
-      isCustomer
-        ? "لا توجد فواتير بيع غير مسددة لهذا العميل."
-        : "لا توجد فواتير شراء غير مسددة لهذا المورد."
-    );
-  }
-  if (leftover > 0.001) {
-    throw new Error(
-      `المبلغ أكبر من إجمالي المتبقي (${totalOpen.toFixed(2)}).`
-    );
-  }
-  if (allocations.length === 0) {
-    throw new Error("تعذر توزيع المبلغ على الفواتير.");
-  }
+  const { allocations } = previewFifoAllocation(open, newAmount);
 
   // Reverse old invoice paid amounts
   for (const a of oldAllocations || []) {
@@ -512,17 +478,19 @@ export async function updatePartyPayment(
     .eq("id", params.paymentId);
   if (updPayErr) throw new Error(mapDbError(updPayErr.message, "تعذر تحديث الدفعة"));
 
-  const { error: insAllocErr } = await supabase
-    .from("party_payment_allocations")
-    .insert(
-      allocations.map((a) => ({
-        payment_id: params.paymentId,
-        invoice_id: a.invoiceId,
-        amount: a.amount,
-      }))
-    );
-  if (insAllocErr) {
-    throw new Error(mapDbError(insAllocErr.message, "تعذر تسجيل التوزيع الجديد"));
+  if (allocations.length > 0) {
+    const { error: insAllocErr } = await supabase
+      .from("party_payment_allocations")
+      .insert(
+        allocations.map((a) => ({
+          payment_id: params.paymentId,
+          invoice_id: a.invoiceId,
+          amount: a.amount,
+        }))
+      );
+    if (insAllocErr) {
+      throw new Error(mapDbError(insAllocErr.message, "تعذر تسجيل التوزيع الجديد"));
+    }
   }
 
   for (const a of allocations) {

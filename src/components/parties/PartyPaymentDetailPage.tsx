@@ -178,7 +178,6 @@ export function PartyPaymentDetailPage({
     [openInvoices, payAmount]
   );
   const totalOpen = preview.totalOpen;
-  const remainingAfter = money(totalOpen - payAmount);
   const balanceAfter = money(
     Number(party?.balance || 0) -
       (isNew ? payAmount : payAmount - Number(payment?.amount || 0))
@@ -350,12 +349,9 @@ export function PartyPaymentDetailPage({
     );
   }
 
-  const canSave =
-    payAmount > 0 &&
-    !!safeId &&
-    openInvoices.length > 0 &&
-    preview.leftover <= 0.001 &&
-    !saving;
+  const canSave = payAmount > 0 && !!safeId && !saving;
+  const creditOnAccount = money(Math.max(0, preview.leftover));
+  const invoiceRemainingAfter = money(Math.max(0, totalOpen - payAmount));
 
   return (
     <div className="space-y-5">
@@ -505,22 +501,34 @@ export function PartyPaymentDetailPage({
             </div>
             <div
               className={`rounded-xl border px-3 py-2.5 ${
-                remainingAfter > 0.001
-                  ? "border-amber-200 bg-amber-50"
-                  : "border-emerald-200 bg-emerald-50"
+                creditOnAccount > 0.001
+                  ? "border-emerald-200 bg-emerald-50"
+                  : invoiceRemainingAfter > 0.001
+                    ? "border-amber-200 bg-amber-50"
+                    : "border-emerald-200 bg-emerald-50"
               }`}
             >
               <p className="text-[11px] font-semibold text-[#687386]">
-                فاضل بعد العملية
+                {creditOnAccount > 0.001
+                  ? kind === "customer"
+                    ? "رصيد دائن بعد العملية"
+                    : "مقدم للمورد بعد العملية"
+                  : "فاضل فواتير بعد العملية"}
               </p>
               <p
                 className={`mt-0.5 text-base font-bold ${
-                  remainingAfter > 0.001
-                    ? "text-amber-800"
-                    : "text-emerald-800"
+                  creditOnAccount > 0.001
+                    ? "text-emerald-800"
+                    : invoiceRemainingAfter > 0.001
+                      ? "text-amber-800"
+                      : "text-emerald-800"
                 }`}
               >
-                {formatCurrency(Math.max(0, remainingAfter))}
+                {formatCurrency(
+                  creditOnAccount > 0.001
+                    ? creditOnAccount
+                    : invoiceRemainingAfter
+                )}
               </p>
             </div>
           </div>
@@ -590,11 +598,12 @@ export function PartyPaymentDetailPage({
           </label>
 
           <AllocationPreview
+            kind={kind}
             allocations={preview.allocations}
             leftover={preview.leftover}
             totalOpen={totalOpen}
             payAmount={payAmount}
-            remainingAfter={remainingAfter}
+            remainingAfter={invoiceRemainingAfter}
           />
 
           <button
@@ -723,8 +732,12 @@ export function PartyPaymentDetailPage({
           ) : (
             <p className="py-10 text-center text-sm text-[#687386]">
               {isNew
-                ? "أدخل مبلغاً لعرض الفواتير اللي هتتأثر"
-                : "لا توجد فواتير مرتبطة بهذه الدفعة"}
+                ? payAmount > 0
+                  ? creditOnAccount > 0.001
+                    ? "لا توجد فواتير مفتوحة — المبلغ يروح رصيد على الحساب"
+                    : "أدخل مبلغاً لعرض الفواتير اللي هتتأثر"
+                  : "أدخل مبلغاً لعرض الفواتير اللي هتتأثر"
+                : "لا توجد فواتير مرتبطة بهذه الدفعة (رصيد على الحساب)"}
             </p>
           )}
         </section>
@@ -760,12 +773,14 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
 }
 
 function AllocationPreview({
+  kind,
   allocations,
   leftover,
   totalOpen,
   payAmount,
   remainingAfter,
 }: {
+  kind: PartyPaymentKind;
   allocations: AllocationPreview[];
   leftover: number;
   totalOpen: number;
@@ -780,16 +795,29 @@ function AllocationPreview({
     );
   }
   if (leftover > 0.001) {
+    const creditLabel =
+      kind === "customer"
+        ? "رصيد دائن على حساب العميل"
+        : "مقدم على حساب المورد";
     return (
-      <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
-        المبلغ أكبر من إجمالي المتبقي ({formatCurrency(totalOpen)}).
-      </p>
+      <div className="space-y-2">
+        {allocations.length > 0 ? (
+          <p className="rounded-lg border border-[#e1e6ee] bg-[#f8fafc] px-3 py-2 text-xs text-[#526176]">
+            سيتم توزيع {formatCurrency(payAmount - leftover)} على{" "}
+            {allocations.length} فاتورة.
+          </p>
+        ) : null}
+        <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+          {formatCurrency(leftover)} سيُسجَّل كـ{creditLabel}
+          {totalOpen <= 0.001 ? " (بدون فواتير مفتوحة)." : "."}
+        </p>
+      </div>
     );
   }
   if (allocations.length === 0) {
     return (
       <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-        لا توجد فواتير مفتوحة للتوزيع.
+        لا توجد فواتير مفتوحة — المبلغ كامل يروح رصيد على الحساب.
       </p>
     );
   }
@@ -797,10 +825,12 @@ function AllocationPreview({
     <div className="rounded-lg border border-[#e1e6ee] bg-[#f8fafc] p-3 text-xs">
       <p className="mb-1 font-bold text-[#172033]">معاينة التوزيع</p>
       <p className="text-[#526176]">
-        {allocations.length} فاتورة · فاضل بعد العملية{" "}
+        {allocations.length} فاتورة · فاضل فواتير بعد العملية{" "}
         <span
           className={
-            remainingAfter > 0.001 ? "font-bold text-amber-800" : "font-bold text-emerald-800"
+            remainingAfter > 0.001
+              ? "font-bold text-amber-800"
+              : "font-bold text-emerald-800"
           }
         >
           {formatCurrency(Math.max(0, remainingAfter))}
