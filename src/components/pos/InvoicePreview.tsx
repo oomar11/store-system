@@ -47,6 +47,7 @@ interface InvoicePreviewProps {
   issuedAt?: Date | string | null;
   /** invoice (default) or quote */
   kind?: "invoice" | "quote";
+  notes?: string;
 }
 
 function resolvePrintOffset(settings: Settings | null) {
@@ -76,6 +77,7 @@ export function InvoicePreview({
   variant = "success",
   issuedAt,
   kind = "invoice",
+  notes,
 }: InvoicePreviewProps) {
   const [currentDateTime] = useState(
     () => (issuedAt ? new Date(issuedAt) : new Date())
@@ -169,6 +171,7 @@ export function InvoicePreview({
     currentDateTime,
     kind,
     printOpts,
+    notes,
     // From sales history the DB balance already includes this invoice's remaining.
     // After POS save, selectedCustomer still holds the pre-posting balance.
     balanceIncludesInvoice: isView,
@@ -288,6 +291,7 @@ interface InvoiceContentProps {
   currentDateTime: Date | null;
   kind?: "invoice" | "quote";
   printOpts: PrintFormatsConfig;
+  notes?: string;
   /** When true, customer.balance already includes this invoice's remaining (reprint). */
   balanceIncludesInvoice?: boolean;
 }
@@ -316,6 +320,7 @@ function InvoiceContent({
   currentDateTime,
   kind = "invoice",
   printOpts,
+  notes,
   balanceIncludesInvoice = false,
 }: InvoiceContentProps) {
   const isQuote = kind === "quote";
@@ -540,6 +545,15 @@ function InvoiceContent({
           </div>
         )}
       </div>
+
+      {notes?.trim() ? (
+        <div
+          className={`receipt-divider-top mt-2 border-t border-dashed border-slate-200 pt-1.5 ${fonts.meta}`}
+        >
+          <span className="font-semibold text-slate-500">ملاحظات: </span>
+          <span className="text-slate-800 whitespace-pre-wrap">{notes.trim()}</span>
+        </div>
+      ) : null}
 
       {/* 6. Footer Policy and Thank You */}
       <div className="receipt-divider-top mt-3 pt-2 text-center space-y-1">
