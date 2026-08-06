@@ -58,6 +58,11 @@ export async function createCompletedInvoice(
   }
 
   const occurredAt = input.createdAt || new Date().toISOString();
+  const forWorkshop = Boolean(input.forWorkshop) && input.type === "sale";
+  // Internal workshop issue: closed for P&L/stock, RPC skips safe + AR
+  const paidAmount = forWorkshop ? input.total : input.paidAmount;
+  const paymentMethod = forWorkshop ? "cash" : input.paymentMethod;
+  const safeId = forWorkshop ? null : input.safeId || null;
 
   const { data, error } = await supabase.rpc("create_completed_invoice", {
     p_type: input.type,
@@ -75,15 +80,16 @@ export async function createCompletedInvoice(
     p_tax_amount: input.taxAmount ?? 0,
     p_discount_amount: input.discountAmount ?? 0,
     p_total: input.total,
-    p_paid_amount: input.paidAmount,
-    p_payment_method: input.paymentMethod,
+    p_paid_amount: paidAmount,
+    p_payment_method: paymentMethod,
     p_customer_id: input.customerId || null,
     p_supplier_id: input.supplierId || null,
-    p_safe_id: input.safeId || null,
+    p_safe_id: safeId,
     p_notes: input.notes || null,
     p_created_at: occurredAt,
     p_original_invoice_id: input.originalInvoiceId || null,
     p_client_op_id: input.clientOpId || null,
+    p_for_workshop: forWorkshop,
   });
 
   if (error) {

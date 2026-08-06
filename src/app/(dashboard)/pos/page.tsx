@@ -1815,22 +1815,28 @@ export default function POSPage({
   // نقدي مبيعات: paidAmount = المستلم من العميل (قد يزيد عن الإجمالي لحساب الباقي)
   // نقدي مشتريات: المدفوع للمورد = الإجمالي بعد الخصم دائماً
   // آجل: paidAmount = المدفوع مقدماً؛ يتخزن على الفاتورة actualPaidAmount
+  // للورشة: صرف داخلي — مفيش حركة خزنة (الفلوس مشتركة من تحصيل الشغلانة)
+  const workshopInternal = mode === "sale" && forWorkshop && !editingInvoiceId;
   const actualPaidAmount = roundMoney(
-    paymentMethod === "cash"
-      ? grandTotal
-      : Math.min(Math.max(0, paidAmount), grandTotal)
+    workshopInternal
+      ? 0
+      : paymentMethod === "cash"
+        ? grandTotal
+        : Math.min(Math.max(0, paidAmount), grandTotal)
   );
   const changeDue = roundMoney(
-    paymentMethod === "cash" && !isPurchaseSide
+    paymentMethod === "cash" && !isPurchaseSide && !workshopInternal
       ? Math.max(0, paidAmount - grandTotal)
       : 0
   );
   const remaining = roundMoney(
-    paymentMethod === "credit"
-      ? Math.max(0, grandTotal - actualPaidAmount)
-      : 0
+    workshopInternal
+      ? 0
+      : paymentMethod === "credit"
+        ? Math.max(0, grandTotal - actualPaidAmount)
+        : 0
   );
-  const needsSafe = actualPaidAmount > 0;
+  const needsSafe = actualPaidAmount > 0 && !workshopInternal;
   const missingSafeSelection = !isDocMode && needsSafe && !selectedSafeId;
   const selectedSafe = safes.find((s) => s.id === selectedSafeId);
   const selectedSafeName = selectedSafe?.name || "—";
@@ -1853,6 +1859,9 @@ export default function POSPage({
   }, [grandTotal, paymentMethod, isDocMode]);
 
   function validateSalePayment(): boolean {
+    if (workshopInternal) {
+      return true;
+    }
     if ((paymentMethod === "credit" || remaining > 0) && !selectedCustomer) {
       toastError("يجب اختيار عميل للعمليات الآجلة أو عند وجود متبقي.");
       return false;
@@ -2062,10 +2071,10 @@ export default function POSPage({
           taxAmount,
           discountAmount,
           total: grandTotal,
-          paidAmount: actualPaidAmount,
-          paymentMethod,
+          paidAmount: forWorkshop ? grandTotal : actualPaidAmount,
+          paymentMethod: forWorkshop ? "cash" : paymentMethod,
           customerId: selectedCustomer?.id || null,
-          safeId: needsSafe ? selectedSafeId : null,
+          safeId: forWorkshop ? null : needsSafe ? selectedSafeId : null,
           notes: notes || null,
           createdAt: new Date().toISOString(),
           forWorkshop,
@@ -2077,7 +2086,7 @@ export default function POSPage({
           invoice.offline
             ? `تم الحفظ أوفلاين ${invoice.invoice_number} — سيُزامن عند عودة النت`
             : forWorkshop
-              ? `تم حفظ الفاتورة ${invoice.invoice_number} وإرسالها لصندوق الورشة`
+              ? `تم حفظ صرف الورشة ${invoice.invoice_number} (مكسب/مخزون بدون حركة خزنة)`
               : `تم حفظ الفاتورة ${invoice.invoice_number}`
         );
         void Promise.all([
@@ -3659,35 +3668,45 @@ export default function POSPage({
 
           {!isDocMode && (
             <>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPaymentMethod("cash");
-                    setPaidAmount(grandTotal);
-                  }}
-                  className={paymentMethodChipClass("cash", paymentMethod === "cash")}
-                >
-                  نقدي
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPaymentMethod("credit");
-                    setPaidAmount(0);
-                  }}
-                  className={paymentMethodChipClass("credit", paymentMethod === "credit")}
-                >
-                  آجل
-                </button>
-              </div>
+              {workshopInternal ? (
+                <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2.5 text-xs leading-relaxed text-violet-900">
+                  <p className="font-bold">صرف داخلي للورشة</p>
+                  <p className="mt-1 text-violet-800/90">
+                    الفاتورة هتتسجل لمكسب المحل وخصم المخزون، وتظهر في صندوق
+                    الورشة — من غير إيداع خزنة ولا رصيد آجل (فلوس الشغلانة مشتركة).
+                  </p>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentMethod("cash");
+                      setPaidAmount(grandTotal);
+                    }}
+                    className={paymentMethodChipClass("cash", paymentMethod === "cash")}
+                  >
+                    نقدي
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentMethod("credit");
+                      setPaidAmount(0);
+                    }}
+                    className={paymentMethodChipClass("credit", paymentMethod === "credit")}
+                  >
+                    آجل
+                  </button>
+                </div>
+              )}
 
               {mode === "sale" && !editingInvoiceId ? (
                 <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2.5">
                   <span className="text-sm font-semibold text-violet-900">
                     للورشة
                     <span className="mt-0.5 block text-[11px] font-normal text-violet-700/80">
-                      تظهر في صندوق وارد الورشة لتعيينها على شغلانة
+                      صرف داخلي: مكسب + مخزون بدون حركة خزنة
                     </span>
                   </span>
                   <input
@@ -3699,6 +3718,8 @@ export default function POSPage({
                 </label>
               ) : null}
 
+              {!workshopInternal ? (
+                <>
               <div className="flex flex-col gap-1">
                 <div className="flex items-center gap-2">
                   <input
@@ -3799,6 +3820,8 @@ export default function POSPage({
                   )}
                 </div>
               )}
+                </>
+              ) : null}
             </>
           )}
 
@@ -3949,7 +3972,9 @@ export default function POSPage({
               {mode === "sale" && forWorkshop ? (
                 <div className="flex justify-between gap-3 border-t border-[#e5eaf1] pt-2">
                   <dt className="text-[#687386]">للورشة</dt>
-                  <dd className="font-bold text-violet-700">نعم — صندوق الوارد</dd>
+                  <dd className="font-bold text-violet-700">
+                    صرف داخلي — بدون خزنة
+                  </dd>
                 </div>
               ) : null}
             </dl>
