@@ -26,6 +26,10 @@ import {
 import { useOffline } from "@/components/offline/OfflineProvider";
 import { pickDefaultSafeId } from "@/lib/safe-transactions";
 import {
+  normalizeActiveSafes,
+  safesOrderQuery,
+} from "@/lib/safes-order";
+import {
   formatCurrency,
   formatDateRelative,
   formatDateShort,
@@ -116,18 +120,19 @@ export default function MobilePartyDetailPage() {
               balance: found.balance,
               created_at: "",
             } as Customer | Supplier,
-            safes: (snap.safes || [])
-              .filter((s) => s.is_active)
-              .map(
+            safes: normalizeActiveSafes(
+              (snap.safes || []).map(
                 (s) =>
                   ({
                     id: s.id,
                     name: s.name,
                     balance: s.balance,
                     is_active: s.is_active,
+                    sort_order: s.sort_order ?? undefined,
                     created_at: "",
                   }) as Safe
-              ),
+              )
+            ),
           };
         },
         network: async () => {
@@ -135,11 +140,9 @@ export default function MobilePartyDetailPage() {
           const [partyRes, safesRes] = await withTimeout(
             Promise.all([
               supabase.from(table).select("*").eq("id", id).maybeSingle(),
-              supabase
-                .from("safes")
-                .select("*")
-                .eq("is_active", true)
-                .order("name"),
+              safesOrderQuery(
+                supabase.from("safes").select("*").eq("is_active", true)
+              ),
             ]),
             5000
           );
@@ -147,13 +150,14 @@ export default function MobilePartyDetailPage() {
           if (!partyRes.data) throw new Error("الطرف غير موجود");
           return {
             party: partyRes.data as Customer | Supplier,
-            safes: (safesRes.data || []) as Safe[],
+            safes: normalizeActiveSafes((safesRes.data || []) as Safe[]),
           };
         },
         apply: (data) => {
+          const safes = normalizeActiveSafes(data.safes);
           setParty(data.party);
-          setSafes(data.safes);
-          const def = pickDefaultSafeId(data.safes);
+          setSafes(safes);
+          const def = pickDefaultSafeId(safes);
           if (def) setSafeId((p) => p || def);
         },
       });
