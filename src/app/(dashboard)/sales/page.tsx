@@ -815,6 +815,7 @@ export default function SalesPage() {
             preview.invoice.payment_method === "credit" ? "credit" : "cash"
           }
           cashierName={profile?.full_name || "الكاشير"}
+          notes={preview.invoice.notes || undefined}
           settings={settings}
           issuedAt={preview.invoice.created_at}
           onClose={() => setPreview(null)}

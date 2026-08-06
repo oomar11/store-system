@@ -3727,6 +3727,23 @@ export default function POSPage({
             <span className="text-gray-900">الإجمالي</span>
           </div>
 
+          <div>
+            <label
+              htmlFor="pos-invoice-notes"
+              className="mb-1 block text-xs font-semibold text-gray-700"
+            >
+              ملاحظات
+            </label>
+            <textarea
+              id="pos-invoice-notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={2}
+              placeholder="ملاحظة اختيارية على الفاتورة"
+              className="w-full resize-y rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none max-lg:min-h-12 max-lg:text-base"
+            />
+          </div>
+
           {!isDocMode && (
             <>
               {workshopInternal ? (
@@ -4083,6 +4100,7 @@ export default function POSPage({
           paymentMethod={paymentMethod}
           kind="invoice"
           cashierName={profile?.full_name || "الكاشير"}
+          notes={notes || undefined}
           settings={settings}
           onClose={clearForm}
         />
@@ -4131,6 +4149,7 @@ export default function POSPage({
           paymentMethod="cash"
           kind="quote"
           cashierName={profile?.full_name || "الكاشير"}
+          notes={notes || undefined}
           settings={settings}
           onClose={clearForm}
         />
