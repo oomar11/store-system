@@ -13,6 +13,10 @@ import {
   withTimeout,
 } from "@/lib/offline";
 import { useOffline } from "@/components/offline/OfflineProvider";
+import {
+  normalizeActiveSafes,
+  safesOrderQuery,
+} from "@/lib/safes-order";
 import { MobileHeader } from "@/components/mobile/MobileHeader";
 import {
   MobileEmpty,
@@ -119,15 +123,16 @@ export default function MobileHomePage() {
           : 0;
 
         const safes = canTreasury
-          ? ((snap.safes || [])
-              .filter((s) => s.is_active)
-              .map((s) => ({
+          ? normalizeActiveSafes(
+              (snap.safes || []).map((s) => ({
                 id: s.id,
                 name: s.name,
                 balance: s.balance,
                 is_active: s.is_active,
+                sort_order: s.sort_order ?? undefined,
                 created_at: "",
-              })) as Safe[])
+              })) as Safe[]
+            )
           : [];
 
         const recent = canSales
@@ -175,11 +180,9 @@ export default function MobileHomePage() {
                   .eq("is_active", true)
               : Promise.resolve({ data: [] as unknown[], error: null }),
             canTreasury
-              ? supabase
-                  .from("safes")
-                  .select("*")
-                  .eq("is_active", true)
-                  .order("name")
+              ? safesOrderQuery(
+                  supabase.from("safes").select("*").eq("is_active", true)
+                )
               : Promise.resolve({ data: [] as Safe[], error: null }),
             canSales
               ? supabase
@@ -230,11 +233,15 @@ export default function MobileHomePage() {
               p.notify_low_stock
             )
           ).length,
-          safes: (safesRes.data || []) as Safe[],
+          safes: normalizeActiveSafes((safesRes.data || []) as Safe[]),
           recent: (recentRes.data || []) as unknown as RecentInvoice[],
         };
       },
-      apply: (data) => setStats(data),
+      apply: (data) =>
+        setStats({
+          ...data,
+          safes: normalizeActiveSafes(data.safes),
+        }),
     });
   }, [canProducts, canSales, canTreasury, online, supabase]);
 

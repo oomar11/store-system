@@ -26,11 +26,16 @@ import {
   applyPartyPaymentOnlineOrQueue,
   createExpenseOnlineOrQueue,
   getSnapshot,
+  listActiveEntities,
   readLocalThenNetwork,
   withTimeout,
 } from "@/lib/offline";
 import { useOffline } from "@/components/offline/OfflineProvider";
 import { fetchOpenInvoicesForParty } from "@/lib/party-payments";
+import {
+  normalizeActiveSafes,
+  safesOrderQuery,
+} from "@/lib/safes-order";
 import { formatCurrency, formatDateShort } from "@/lib/utils";
 import { MobileHeader } from "@/components/mobile/MobileHeader";
 import {
@@ -88,6 +93,13 @@ export default function MobileFinancePage() {
   const [error, setError] = useState("");
   const [feed, setFeed] = useState<"tx" | "expenses">("tx");
 
+  const activeFeed: "tx" | "expenses" =
+    feed === "expenses" && canExpenses
+      ? "expenses"
+      : canTreasury
+        ? "tx"
+        : "expenses";
+
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
   const [safeId, setSafeId] = useState("");
@@ -106,23 +118,26 @@ export default function MobileFinancePage() {
     }>({
       offline,
       timeoutMs: 5000,
+      // Prefer network when online so stale offline ghosts don't stick as duplicates.
+      backgroundRefresh: false,
       local: async () => {
         const snap = await getSnapshot();
         if (!snap) return null;
         return {
           safes: canTreasury
-            ? ((snap.safes || [])
-                .filter((s) => s.is_active)
-                .map(
+            ? normalizeActiveSafes(
+                (snap.safes || []).map(
                   (s) =>
                     ({
                       id: s.id,
                       name: s.name,
                       balance: s.balance,
                       is_active: s.is_active,
+                      sort_order: s.sort_order ?? undefined,
                       created_at: "",
                     }) as Safe
-                ))
+                )
+              )
             : [],
           customers: canCustomers
             ? (snap.customers || [])
@@ -158,11 +173,9 @@ export default function MobileFinancePage() {
         const [safesRes, custRes, suppRes] = await withTimeout(
           Promise.all([
             canTreasury
-              ? supabase
-                  .from("safes")
-                  .select("*")
-                  .eq("is_active", true)
-                  .order("name")
+              ? safesOrderQuery(
+                  supabase.from("safes").select("*").eq("is_active", true)
+                )
               : Promise.resolve({ data: [] as Safe[], error: null }),
             canCustomers
               ? supabase
@@ -184,24 +197,62 @@ export default function MobileFinancePage() {
           5000
         );
         return {
-          safes: (safesRes.data || []) as Safe[],
+          safes: normalizeActiveSafes((safesRes.data || []) as Safe[]),
           customers: (custRes.data || []) as Customer[],
           suppliers: (suppRes.data || []) as Supplier[],
         };
       },
       apply: (data) => {
-        setSafes(data.safes);
+        const safes = normalizeActiveSafes(data.safes);
+        setSafes(safes);
         setCustomers(data.customers);
         setSuppliers(data.suppliers);
-        const def = pickDefaultSafeId(data.safes);
+        const def = pickDefaultSafeId(safes);
         if (def) setSafeId((prev) => prev || def);
-        if (data.safes[1]) setToSafeId((prev) => prev || data.safes[1].id);
+        if (safes[1]) setToSafeId((prev) => prev || safes[1].id);
       },
     });
 
+    async function loadTxFromLocal() {
+      if (!canTreasury) {
+        setTxRows([]);
+        return;
+      }
+      const [txs, localSafes] = await Promise.all([
+        listActiveEntities("safe_transactions"),
+        listActiveEntities("safes"),
+      ]);
+      const safeName = new Map(
+        localSafes.map((s) => [String(s.id), String(s.name || "خزنة")])
+      );
+      const rows = txs
+        .map((t) => ({
+          id: String(t.id),
+          type: String(t.type || ""),
+          amount: Number(t.amount) || 0,
+          description: (t.description as string | null) || (t.notes as string | null) || null,
+          created_at: String(t.created_at || ""),
+          safe: { name: safeName.get(String(t.safe_id)) || "خزنة" },
+        }))
+        .filter((t) => t.id && t.created_at)
+        .sort(
+          (a, b) =>
+            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        )
+        .slice(0, 20);
+      setTxRows(rows);
+    }
+
     if (offline) {
-      setTxRows([]);
-      setExpenses([]);
+      await loadTxFromLocal();
+      if (canExpenses) {
+        try {
+          const { listExpensesLocal } = await import("@/lib/offline");
+          setExpenses(await listExpensesLocal(20));
+        } catch {
+          setExpenses([]);
+        }
+      }
       return;
     }
 
@@ -210,14 +261,36 @@ export default function MobileFinancePage() {
     if (canTreasury) {
       tasks.push(
         (async () => {
-          const { data } = await supabase
+          // Disambiguate: safe_transactions has two FKs to safes (safe_id + related_safe_id).
+          const { data, error: txErr } = await supabase
             .from("safe_transactions")
             .select(
-              "id, type, amount, description, created_at, safe:safes(name)"
+              "id, type, amount, description, notes, created_at, safe:safes!safe_id(name)"
             )
             .order("created_at", { ascending: false })
             .limit(20);
-          setTxRows((data || []) as typeof txRows);
+          if (txErr || !data) {
+            await loadTxFromLocal();
+            return;
+          }
+          setTxRows(
+            (data as Array<{
+              id: string;
+              type: string;
+              amount: number;
+              description: string | null;
+              notes?: string | null;
+              created_at: string;
+              safe?: { name?: string };
+            }>).map((t) => ({
+              id: t.id,
+              type: t.type,
+              amount: t.amount,
+              description: t.description || t.notes || null,
+              created_at: t.created_at,
+              safe: t.safe,
+            }))
+          );
         })()
       );
     }
@@ -511,7 +584,7 @@ export default function MobileFinancePage() {
               <div className="mobile-chip-row">
                 {canExpenses ? (
                   <MobileChip
-                    active={feed === "expenses"}
+                    active={activeFeed === "expenses"}
                     onClick={() => setFeed("expenses")}
                   >
                     مصروفات
@@ -519,7 +592,7 @@ export default function MobileFinancePage() {
                 ) : null}
                 {canTreasury ? (
                   <MobileChip
-                    active={feed === "tx"}
+                    active={activeFeed === "tx"}
                     onClick={() => setFeed("tx")}
                   >
                     نقدية
@@ -527,7 +600,7 @@ export default function MobileFinancePage() {
                 ) : null}
               </div>
               <div className="mobile-panel">
-                {feed === "tx" ? (
+                {activeFeed === "tx" ? (
                   txRows.length === 0 ? (
                     <MobileEmpty message="لا توجد حركات نقدية" />
                   ) : (
