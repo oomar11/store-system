@@ -53,7 +53,7 @@ export async function GET(request: NextRequest) {
     let q = client
       .from("workshop_invoice_inbox")
       .select(
-        "id, invoice_id, invoice_number, total, invoice_date, notes, items_summary, status, assigned_project_key, assigned_project_name, assigned_at, created_at"
+        "id, invoice_id, invoice_number, total, invoice_date, notes, items_summary, status, assigned_project_key, assigned_project_name, assigned_at, created_at, updated_at"
       )
       .order("created_at", { ascending: false })
       .limit(100);
@@ -83,6 +83,7 @@ export async function GET(request: NextRequest) {
       assigned_project_name: row.assigned_project_name,
       assigned_at: row.assigned_at,
       created_at: row.created_at,
+      updated_at: (row as { updated_at?: string | null }).updated_at || null,
     }));
 
     return withWorkshopCors(

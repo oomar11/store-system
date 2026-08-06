@@ -42,6 +42,7 @@ import {
   syncInvoiceSafePayment,
   withInvoiceSafeId,
 } from "@/lib/safe-transactions";
+import { enqueueWorkshopInvoice } from "@/lib/create-invoice";
 import { safesOrderQuery } from "@/lib/safes-order";
 import { formatRpcError } from "@/lib/rpc-error";
 import {
@@ -268,6 +269,10 @@ export default function POSPage({
   );
   const [notes, setNotes] = useState("");
   const [forWorkshop, setForWorkshop] = useState(false);
+  /** Already in workshop inbox — keep «للورشة» locked while editing */
+  const [workshopLocked, setWorkshopLocked] = useState(false);
+  /** Prior edit had no store safe movement (internal workshop sale) */
+  const [editingWasWorkshop, setEditingWasWorkshop] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [showInvoice, setShowInvoice] = useState(false);
@@ -989,6 +994,16 @@ export default function POSPage({
         .select("*, product:products(*)")
         .eq("invoice_id", invoiceId);
 
+      const { data: inboxRow } = await supabase
+        .from("workshop_invoice_inbox")
+        .select("id")
+        .eq("invoice_id", invoiceId)
+        .maybeSingle();
+      const notesText = String(inv.notes || "");
+      const isWorkshop =
+        Boolean(inboxRow?.id) ||
+        notesText.includes("صرف داخلي للورشة");
+
       setEditingInvoiceId(inv.id);
       setEditingDocId(null);
       setLastInvoice(inv.invoice_number);
@@ -1016,18 +1031,34 @@ export default function POSPage({
       setSelectedCustomer((inv.customer as Customer) || null);
       setSelectedTierId(tierIdFromCustomer((inv.customer as Customer) || null));
       setSelectedSupplier(null);
-      setPaymentMethod(inv.payment_method === "credit" ? "credit" : "cash");
+      setForWorkshop(isWorkshop);
+      setWorkshopLocked(Boolean(inboxRow?.id));
+      setEditingWasWorkshop(isWorkshop);
+      setPaymentMethod(
+        isWorkshop
+          ? "cash"
+          : inv.payment_method === "credit"
+            ? "credit"
+            : "cash"
+      );
       setPaidAmount(Number(inv.paid_amount) || 0);
-      const linkedSafeId = await resolveInvoiceSafeId(
-        supabase,
-        inv.id,
-        inv.safe_id || null
-      );
+      const linkedSafeId = isWorkshop
+        ? null
+        : await resolveInvoiceSafeId(
+            supabase,
+            inv.id,
+            inv.safe_id || null
+          );
       setSelectedSafeId(
-        pickDefaultSafeId(activeSafes, inv.payment_method, linkedSafeId)
+        pickDefaultSafeId(
+          activeSafes,
+          isWorkshop ? "cash" : inv.payment_method,
+          linkedSafeId
+        )
       );
+      // Workshop sales never moved cash — keep safe-sync baseline at 0
       setEditingSafeId(linkedSafeId);
-      setEditingPaidAmount(Number(inv.paid_amount) || 0);
+      setEditingPaidAmount(isWorkshop ? 0 : Number(inv.paid_amount) || 0);
       setDiscount(Number(inv.discount_amount) || 0);
       setDiscountType("amount");
       setNotes(inv.notes || "");
@@ -1483,6 +1514,8 @@ export default function POSPage({
     setDiscount(0);
     setNotes("");
     setForWorkshop(false);
+    setWorkshopLocked(false);
+    setEditingWasWorkshop(false);
     setValidUntil("");
     setExpectedDate("");
     setEditingInvoiceId(null);
@@ -1816,7 +1849,7 @@ export default function POSPage({
   // نقدي مشتريات: المدفوع للمورد = الإجمالي بعد الخصم دائماً
   // آجل: paidAmount = المدفوع مقدماً؛ يتخزن على الفاتورة actualPaidAmount
   // للورشة: صرف داخلي — مفيش حركة خزنة (الفلوس مشتركة من تحصيل الشغلانة)
-  const workshopInternal = mode === "sale" && forWorkshop && !editingInvoiceId;
+  const workshopInternal = mode === "sale" && forWorkshop;
   const actualPaidAmount = roundMoney(
     workshopInternal
       ? 0
@@ -1988,9 +2021,21 @@ export default function POSPage({
 
         const { data: oldInvoice } = await supabase
           .from("invoices")
-          .select("customer_id, total, paid_amount, invoice_number")
+          .select("customer_id, total, paid_amount, invoice_number, notes")
           .eq("id", editingInvoiceId)
           .single();
+
+        const editPaidAmount = forWorkshop ? grandTotal : actualPaidAmount;
+        const editPaymentMethod = forWorkshop ? "cash" : paymentMethod;
+        const editSafeId = forWorkshop ? null : needsSafe ? selectedSafeId : null;
+        let editNotes = notes || null;
+        if (forWorkshop) {
+          const tag = "صرف داخلي للورشة — بدون حركة خزنة";
+          const raw = (editNotes || "").trim();
+          if (!raw.includes("صرف داخلي للورشة")) {
+            editNotes = raw ? `${raw}\n${tag}` : tag;
+          }
+        }
 
         const { error: updateError } = await supabase
           .from("invoices")
@@ -2003,11 +2048,11 @@ export default function POSPage({
                 tax_amount: taxAmount,
                 discount_amount: discountAmount,
                 total: grandTotal,
-                paid_amount: actualPaidAmount,
-                payment_method: paymentMethod,
-                notes: notes || null,
+                paid_amount: editPaidAmount,
+                payment_method: editPaymentMethod,
+                notes: editNotes,
               },
-              needsSafe ? selectedSafeId : null
+              editSafeId
             )
           )
           .eq("id", editingInvoiceId);
@@ -2039,7 +2084,7 @@ export default function POSPage({
           }
         }
 
-        if (selectedCustomer && remaining > 0) {
+        if (!forWorkshop && selectedCustomer && remaining > 0) {
           await adjustCustomerBalance(supabase, selectedCustomer.id, remaining);
         }
 
@@ -2047,15 +2092,29 @@ export default function POSPage({
           invoiceId: editingInvoiceId,
           invoiceNumber: oldInvoice?.invoice_number || lastInvoice,
           invoiceType: "sale",
-          oldPaidAmount: Number(oldInvoice?.paid_amount ?? editingPaidAmount) || 0,
-          oldSafeId: editingSafeId,
-          newPaidAmount: actualPaidAmount,
-          newSafeId: needsSafe ? selectedSafeId : null,
+          oldPaidAmount: editingWasWorkshop
+            ? 0
+            : Number(oldInvoice?.paid_amount ?? editingPaidAmount) || 0,
+          oldSafeId: editingWasWorkshop ? null : editingSafeId,
+          newPaidAmount: forWorkshop ? 0 : actualPaidAmount,
+          newSafeId: editSafeId,
         });
 
-        setEditingPaidAmount(actualPaidAmount);
-        setEditingSafeId(needsSafe ? selectedSafeId : null);
+        if (forWorkshop) {
+          await enqueueWorkshopInvoice(supabase, editingInvoiceId);
+        }
+
+        setEditingPaidAmount(forWorkshop ? 0 : actualPaidAmount);
+        setEditingSafeId(editSafeId);
+        setEditingWasWorkshop(forWorkshop);
+        setWorkshopLocked(forWorkshop ? true : workshopLocked);
+        if (forWorkshop && editNotes) setNotes(editNotes);
         setShowInvoice(true);
+        toastSuccess(
+          forWorkshop
+            ? `تم تحديث صرف الورشة ${oldInvoice?.invoice_number || lastInvoice}`
+            : `تم تحديث الفاتورة ${oldInvoice?.invoice_number || lastInvoice}`
+        );
         void Promise.all([
           fetchProducts(),
           fetchCustomers(),
@@ -2429,6 +2488,8 @@ export default function POSPage({
     setDiscountType("amount");
     setNotes("");
     setForWorkshop(false);
+    setWorkshopLocked(false);
+    setEditingWasWorkshop(false);
     setValidUntil("");
     setExpectedDate("");
     setShowInvoice(false);
@@ -3701,17 +3762,24 @@ export default function POSPage({
                 </div>
               )}
 
-              {mode === "sale" && !editingInvoiceId ? (
-                <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2.5">
+              {mode === "sale" ? (
+                <label
+                  className={`flex items-center justify-between gap-3 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2.5 ${
+                    workshopLocked ? "cursor-default opacity-95" : "cursor-pointer"
+                  }`}
+                >
                   <span className="text-sm font-semibold text-violet-900">
                     للورشة
                     <span className="mt-0.5 block text-[11px] font-normal text-violet-700/80">
-                      صرف داخلي: مكسب + مخزون بدون حركة خزنة
+                      {workshopLocked
+                        ? "مربوطة بصندوق الورشة — التعديل يتزامن تلقائياً"
+                        : "صرف داخلي: مكسب + مخزون بدون حركة خزنة"}
                     </span>
                   </span>
                   <input
                     type="checkbox"
                     checked={forWorkshop}
+                    disabled={workshopLocked}
                     onChange={(e) => setForWorkshop(e.target.checked)}
                     className="h-5 w-5 accent-violet-700"
                   />
