@@ -203,13 +203,13 @@ export default function MobileFinancePage() {
         };
       },
       apply: (data) => {
-        setSafes(normalizeActiveSafes(data.safes));
+        const safes = normalizeActiveSafes(data.safes);
+        setSafes(safes);
         setCustomers(data.customers);
         setSuppliers(data.suppliers);
-        const normalized = normalizeActiveSafes(data.safes);
-        const def = pickDefaultSafeId(normalized);
+        const def = pickDefaultSafeId(safes);
         if (def) setSafeId((prev) => prev || def);
-        if (normalized[1]) setToSafeId((prev) => prev || normalized[1].id);
+        if (safes[1]) setToSafeId((prev) => prev || safes[1].id);
       },
     });
 
