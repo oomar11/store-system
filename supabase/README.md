@@ -28,3 +28,5 @@ Do **not** paste only `schema.sql` and stop — the live app needs the migration
 Core: `profiles`, `categories`, `products`, `customers`, `suppliers`, `invoices`, `invoice_items`, `documents`, `document_items`, `accounts`, `journal_entries`, `journal_lines`, `safes`, `safe_transactions`, `settings`, `inventory_counts`, `inventory_count_items`, `backup_runs`, `telegram_config`
 
 Added by migrations: `shifts`, `app_notifications`, `party_payments`, `party_payment_allocations`, `document_sequences`, `audit_logs`, `price_tiers`, `product_tier_prices`, `tier_category_discounts`, `tier_product_discounts`, `client_operations`, `sync_devices`, `sync_operations`, `sync_changes`
+
+Dual-role parties (`20260809_party_dual_link_netting.sql`): `customers.linked_supplier_id` ↔ `suppliers.linked_customer_id` (1:1); net balance UI = customer.balance − supplier.balance; `party_payments.is_settlement` for مقاصة without safe movement.

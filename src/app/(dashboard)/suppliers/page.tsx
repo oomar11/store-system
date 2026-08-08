@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase";
 import { formatCurrency, formatDateShort, smartSearchMatch } from "@/lib/utils";
+import { computeNetBalance } from "@/lib/party-link";
 import { useSort } from "@/hooks/useSort";
 import { useUrlSearchTerm } from "@/hooks/useUrlSearchTerm";
 import { SortableHeader } from "@/components/ui/SortableHeader";
@@ -38,6 +39,9 @@ export default function SuppliersPage() {
   const { confirm } = useConfirm();
   const { error: toastError, info: toastInfo, success: toastSuccess } = useToast();
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [linkedCustomerBalances, setLinkedCustomerBalances] = useState<
+    Record<string, number>
+  >({});
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
@@ -63,6 +67,7 @@ export default function SuppliersPage() {
 
     await readLocalThenNetwork<{
       suppliers: Supplier[];
+      linkedCustomerBalances: Record<string, number>;
       settings: Settings | null;
     }>({
       offline,
@@ -70,6 +75,10 @@ export default function SuppliersPage() {
       local: async () => {
         const snap = await getSnapshot();
         if (!snap?.suppliers?.length && !snap?.settings) return null;
+        const customerBal: Record<string, number> = {};
+        for (const c of snap.customers || []) {
+          customerBal[c.id] = Number(c.balance) || 0;
+        }
         return {
           suppliers: (snap.suppliers || []).map(
             (s) =>
@@ -78,33 +87,42 @@ export default function SuppliersPage() {
                 name: s.name,
                 phone: s.phone || undefined,
                 balance: s.balance,
+                linked_customer_id: s.linked_customer_id ?? null,
                 is_active: s.is_active !== false,
                 last_activity_at: s.last_activity_at ?? null,
                 created_at: "",
               }) as Supplier
           ),
+          linkedCustomerBalances: customerBal,
           settings: (snap.settings as Settings | null) ?? null,
         };
       },
       network: async () => {
-        const [supRes, settingsRes] = await withTimeout(
+        const [supRes, settingsRes, custRes] = await withTimeout(
           Promise.all([
             supabase
               .from("suppliers")
               .select("*")
               .order("created_at", { ascending: false }),
             supabase.from("settings").select("*").limit(1).maybeSingle(),
+            supabase.from("customers").select("id, balance"),
           ]),
           5000
         );
         if (supRes.error) throw supRes.error;
+        const customerBal: Record<string, number> = {};
+        for (const c of custRes.data || []) {
+          customerBal[c.id as string] = Number(c.balance) || 0;
+        }
         return {
           suppliers: (supRes.data as Supplier[]) || [],
+          linkedCustomerBalances: customerBal,
           settings: (settingsRes.data as Settings | null) ?? null,
         };
       },
       apply: (data) => {
         setSuppliers(data.suppliers);
+        setLinkedCustomerBalances(data.linkedCustomerBalances || {});
         if (data.settings) setSettings(data.settings);
       },
     });
@@ -521,6 +539,11 @@ export default function SuppliersPage() {
                       >
                         {supplier.name}
                       </Link>
+                      {supplier.linked_customer_id ? (
+                        <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-800">
+                          عميل+مورد
+                        </span>
+                      ) : null}
                       {!active && (
                         <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[10px] font-bold text-gray-600">
                           موقوف
@@ -535,21 +558,44 @@ export default function SuppliersPage() {
                     {supplier.address || "-"}
                   </td>
                   <td className="px-4 py-3">
-                    <span
-                      className={`${
-                        supplier.balance !== 0 ? "font-bold" : "font-medium"
-                      } ${
-                        supplier.balance > 0
-                          ? "text-red-600"
-                          : supplier.balance < 0
-                          ? "text-green-600"
-                          : "text-gray-600"
-                      }`}
-                    >
-                      {formatCurrency(Math.abs(supplier.balance))}
-                      {supplier.balance > 0 && " (علينا)"}
-                      {supplier.balance < 0 && " (لنا)"}
-                    </span>
+                    {(() => {
+                      if (supplier.linked_customer_id) {
+                        const net = computeNetBalance(
+                          linkedCustomerBalances[supplier.linked_customer_id] ?? 0,
+                          supplier.balance
+                        );
+                        return (
+                          <span
+                            className={`font-medium ${
+                              net.side === "us"
+                                ? "text-red-600"
+                                : net.side === "them"
+                                  ? "text-green-600"
+                                  : "text-gray-600"
+                            }`}
+                          >
+                            {net.label}
+                          </span>
+                        );
+                      }
+                      return (
+                        <span
+                          className={`${
+                            supplier.balance !== 0 ? "font-bold" : "font-medium"
+                          } ${
+                            supplier.balance > 0
+                              ? "text-red-600"
+                              : supplier.balance < 0
+                                ? "text-green-600"
+                                : "text-gray-600"
+                          }`}
+                        >
+                          {formatCurrency(Math.abs(supplier.balance))}
+                          {supplier.balance > 0 && " (علينا)"}
+                          {supplier.balance < 0 && " (لنا)"}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-4 py-3 text-gray-600">
                     {supplier.last_activity_at

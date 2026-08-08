@@ -101,6 +101,10 @@ import { isReceiptLayout } from "@/lib/print-formats";
 import { QuickPartyForm } from "@/components/parties/QuickPartyForm";
 import { DateField } from "@/components/ui/DateField";
 import { useUrlSearchTerm } from "@/hooks/useUrlSearchTerm";
+import {
+  ensureCustomerForSupplier,
+  ensureSupplierForCustomer,
+} from "@/lib/party-link";
 import type { Product, Customer, Supplier, Settings, Safe, PriceTier } from "@/types";
 import {
   AlertTriangle,
@@ -736,6 +740,7 @@ export default function POSPage({
               phone: c.phone,
               balance: c.balance,
               price_tier_id: tierId,
+              linked_supplier_id: c.linked_supplier_id ?? null,
               price_tier: nested
                 ? {
                     id: nested.id,
@@ -880,6 +885,7 @@ export default function POSPage({
             name: s.name,
             phone: s.phone,
             balance: s.balance,
+            linked_customer_id: s.linked_customer_id ?? null,
           })) as typeof suppliers;
       },
       network: async () => {
@@ -2524,7 +2530,83 @@ export default function POSPage({
     smartSearchMatch(partySearch, [s.name, s.phone])
   );
 
-  const partyResults = isPurchaseSide ? filteredSuppliers : filteredCustomers;
+  type PartyPickRow = {
+    key: string;
+    name: string;
+    phone?: string | null;
+    balance: number;
+    badge?: string;
+    kind: "customer" | "supplier" | "supplier_as_customer" | "customer_as_supplier";
+    customer?: Customer;
+    supplier?: Supplier;
+  };
+
+  const partyPickResults: PartyPickRow[] = (() => {
+    if (isPurchaseSide) {
+      const rows: PartyPickRow[] = filteredSuppliers.map((s) => ({
+        key: `s-${s.id}`,
+        name: s.name,
+        phone: s.phone,
+        balance: s.balance,
+        badge: s.linked_customer_id ? "عميل+مورد" : undefined,
+        kind: "supplier" as const,
+        supplier: s,
+      }));
+      for (const c of filteredCustomers) {
+        if (
+          c.linked_supplier_id &&
+          filteredSuppliers.some((s) => s.id === c.linked_supplier_id)
+        ) {
+          continue;
+        }
+        if (
+          filteredSuppliers.some((s) => s.linked_customer_id === c.id)
+        ) {
+          continue;
+        }
+        rows.push({
+          key: `c-as-s-${c.id}`,
+          name: c.name,
+          phone: c.phone,
+          balance: c.balance,
+          badge: c.linked_supplier_id ? "عميل مربوط" : "تفعيل كمورد",
+          kind: "customer_as_supplier",
+          customer: c,
+        });
+      }
+      return rows;
+    }
+
+    const rows: PartyPickRow[] = filteredCustomers.map((c) => ({
+      key: `c-${c.id}`,
+      name: c.name,
+      phone: c.phone,
+      balance: c.balance,
+      badge: c.linked_supplier_id ? "عميل+مورد" : undefined,
+      kind: "customer" as const,
+      customer: c,
+    }));
+    for (const s of filteredSuppliers) {
+      if (
+        s.linked_customer_id &&
+        filteredCustomers.some((c) => c.id === s.linked_customer_id)
+      ) {
+        continue;
+      }
+      rows.push({
+        key: `s-as-c-${s.id}`,
+        name: s.name,
+        phone: s.phone,
+        balance: s.balance,
+        badge: s.linked_customer_id ? "مورد مربوط" : "تفعيل كعميل",
+        kind: "supplier_as_customer",
+        supplier: s,
+      });
+    }
+    return rows;
+  })();
+
+  const partyResults = partyPickResults;
 
   useEffect(() => {
     if (!showPartyList) return;
@@ -2532,17 +2614,95 @@ export default function POSPage({
     el?.scrollIntoView({ block: "nearest" });
   }, [activePartyIndex, showPartyList, partyResults.length]);
 
-  function selectPartyByIndex(index: number) {
+  async function selectPartyByIndex(index: number) {
     const party = partyResults[index];
     if (!party) return;
-    if (isPurchaseSide) {
-      setSelectedSupplier(party as Supplier);
-    } else {
-      selectCustomer(party as Customer);
+    try {
+      if (party.kind === "supplier" && party.supplier) {
+        setSelectedSupplier(party.supplier);
+      } else if (party.kind === "customer" && party.customer) {
+        selectCustomer(party.customer);
+      } else if (party.kind === "supplier_as_customer" && party.supplier) {
+        let customerId = party.supplier.linked_customer_id || null;
+        if (!customerId) {
+          customerId = await ensureCustomerForSupplier(
+            supabase,
+            party.supplier.id
+          );
+          await Promise.all([fetchCustomers(), fetchSuppliers()]);
+        }
+        const customer =
+          customers.find((c) => c.id === customerId) ||
+          ({
+            id: customerId,
+            name: party.supplier.name,
+            phone: party.supplier.phone || undefined,
+            balance: 0,
+            linked_supplier_id: party.supplier.id,
+            created_at: "",
+          } as Customer);
+        // Prefer freshly fetched list
+        const refreshed = (
+          await supabase
+            .from("customers")
+            .select("*, price_tier:price_tiers(*)")
+            .eq("id", customerId)
+            .maybeSingle()
+        ).data as Customer | null;
+        selectCustomer(refreshed || customer);
+        if (refreshed) {
+          setCustomers((prev) => {
+            if (prev.some((c) => c.id === refreshed.id)) return prev;
+            return [...prev, refreshed].sort((a, b) =>
+              a.name.localeCompare(b.name, "ar")
+            );
+          });
+        }
+      } else if (party.kind === "customer_as_supplier" && party.customer) {
+        let supplierId = party.customer.linked_supplier_id || null;
+        if (!supplierId) {
+          supplierId = await ensureSupplierForCustomer(
+            supabase,
+            party.customer.id
+          );
+          await Promise.all([fetchCustomers(), fetchSuppliers()]);
+        }
+        const refreshed = (
+          await supabase
+            .from("suppliers")
+            .select("*")
+            .eq("id", supplierId)
+            .maybeSingle()
+        ).data as Supplier | null;
+        const supplier =
+          refreshed ||
+          suppliers.find((s) => s.id === supplierId) ||
+          ({
+            id: supplierId,
+            name: party.customer.name,
+            phone: party.customer.phone || undefined,
+            balance: 0,
+            linked_customer_id: party.customer.id,
+            created_at: "",
+          } as Supplier);
+        setSelectedSupplier(supplier);
+        if (refreshed) {
+          setSuppliers((prev) => {
+            if (prev.some((s) => s.id === refreshed.id)) return prev;
+            return [...prev, refreshed].sort((a, b) =>
+              a.name.localeCompare(b.name, "ar")
+            );
+          });
+        }
+      }
+      setShowPartyList(false);
+      setPartySearch("");
+      setActivePartyIndex(0);
+    } catch (e) {
+      toastError(
+        e instanceof Error ? e.message : "تعذر اختيار الطرف"
+      );
     }
-    setShowPartyList(false);
-    setPartySearch("");
-    setActivePartyIndex(0);
   }
 
   function handlePartyKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -2590,7 +2750,7 @@ export default function POSPage({
         activePartyIndex >= 0 && activePartyIndex < partyResults.length
           ? activePartyIndex
           : 0;
-      selectPartyByIndex(index);
+      void selectPartyByIndex(index);
     }
   }
 
@@ -3177,12 +3337,12 @@ export default function POSPage({
                 {showPartyList && !selectedSupplier && (
                   <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-48 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
                     <div className="divide-y divide-gray-50">
-                      {filteredSuppliers.map((s, index) => (
+                      {partyPickResults.map((row, index) => (
                         <button
-                          key={s.id}
+                          key={row.key}
                           id={`party-option-${index}`}
                           type="button"
-                          onClick={() => selectPartyByIndex(index)}
+                          onClick={() => void selectPartyByIndex(index)}
                           onMouseEnter={() => setActivePartyIndex(index)}
                           className={`flex w-full items-center justify-between px-4 py-2.5 text-right text-sm transition-colors ${
                             index === activePartyIndex
@@ -3191,31 +3351,44 @@ export default function POSPage({
                           }`}
                         >
                           <div className="flex flex-col text-right">
-                            <span className="font-medium text-gray-900">{s.name}</span>
-                            {s.phone && (
-                              <span className="mt-0.5 text-xs text-gray-400">{s.phone}</span>
+                            <span className="font-medium text-gray-900">
+                              {row.name}
+                              {row.badge ? (
+                                <span className="mr-1 rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-800">
+                                  {row.badge}
+                                </span>
+                              ) : null}
+                            </span>
+                            {row.phone && (
+                              <span className="mt-0.5 text-xs text-gray-400">{row.phone}</span>
                             )}
                           </div>
                           <div className="text-left">
                             <span
                               className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                                s.balance > 0
+                                row.balance > 0
                                   ? "bg-red-50 text-red-700"
-                                  : s.balance < 0
+                                  : row.balance < 0
                                     ? "bg-green-50 text-green-700"
                                     : "bg-gray-50 text-gray-500"
                               }`}
                             >
-                              {s.balance > 0
-                                ? `علينا: ${formatCurrency(s.balance)}`
-                                : s.balance < 0
-                                  ? `لنا: ${formatCurrency(Math.abs(s.balance))}`
-                                  : "رصيد 0"}
+                              {row.kind === "customer_as_supplier"
+                                ? row.balance > 0
+                                  ? `عليه: ${formatCurrency(row.balance)}`
+                                  : row.balance < 0
+                                    ? `له: ${formatCurrency(Math.abs(row.balance))}`
+                                    : "رصيد 0"
+                                : row.balance > 0
+                                  ? `علينا: ${formatCurrency(row.balance)}`
+                                  : row.balance < 0
+                                    ? `لنا: ${formatCurrency(Math.abs(row.balance))}`
+                                    : "رصيد 0"}
                             </span>
                           </div>
                         </button>
                       ))}
-                      {filteredSuppliers.length === 0 && (
+                      {partyPickResults.length === 0 && (
                         <p className="px-4 py-2.5 text-center text-xs text-gray-400">
                           لا يوجد مورد بهذا الاسم
                         </p>
@@ -3365,12 +3538,12 @@ export default function POSPage({
                 {showPartyList && !selectedCustomer && (
                   <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-48 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
                     <div className="divide-y divide-gray-50">
-                      {filteredCustomers.map((c, index) => (
+                      {partyPickResults.map((row, index) => (
                         <button
-                          key={c.id}
+                          key={row.key}
                           id={`party-option-${index}`}
                           type="button"
-                          onClick={() => selectPartyByIndex(index)}
+                          onClick={() => void selectPartyByIndex(index)}
                           onMouseEnter={() => setActivePartyIndex(index)}
                           className={`flex w-full items-center justify-between px-4 py-2.5 text-right text-sm transition-colors ${
                             index === activePartyIndex
@@ -3379,31 +3552,44 @@ export default function POSPage({
                           }`}
                         >
                           <div className="flex flex-col text-right">
-                            <span className="font-medium text-gray-900">{c.name}</span>
-                            {c.phone && (
-                              <span className="mt-0.5 text-xs text-gray-400">{c.phone}</span>
+                            <span className="font-medium text-gray-900">
+                              {row.name}
+                              {row.badge ? (
+                                <span className="mr-1 rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-800">
+                                  {row.badge}
+                                </span>
+                              ) : null}
+                            </span>
+                            {row.phone && (
+                              <span className="mt-0.5 text-xs text-gray-400">{row.phone}</span>
                             )}
                           </div>
                           <div className="text-left">
                             <span
                               className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                                c.balance > 0
+                                row.balance > 0
                                   ? "bg-red-50 text-red-700"
-                                  : c.balance < 0
+                                  : row.balance < 0
                                     ? "bg-green-50 text-green-700"
                                     : "bg-gray-50 text-gray-500"
                               }`}
                             >
-                              {c.balance > 0
-                                ? `عليه: ${formatCurrency(c.balance)}`
-                                : c.balance < 0
-                                  ? `له: ${formatCurrency(Math.abs(c.balance))}`
-                                  : "رصيد 0"}
+                              {row.kind === "supplier_as_customer"
+                                ? row.balance > 0
+                                  ? `علينا: ${formatCurrency(row.balance)}`
+                                  : row.balance < 0
+                                    ? `لنا: ${formatCurrency(Math.abs(row.balance))}`
+                                    : "رصيد 0"
+                                : row.balance > 0
+                                  ? `عليه: ${formatCurrency(row.balance)}`
+                                  : row.balance < 0
+                                    ? `له: ${formatCurrency(Math.abs(row.balance))}`
+                                    : "رصيد 0"}
                             </span>
                           </div>
                         </button>
                       ))}
-                      {filteredCustomers.length === 0 && (
+                      {partyPickResults.length === 0 && (
                         <p className="px-4 py-2.5 text-center text-xs text-gray-400">
                           لا يوجد عميل بهذا الاسم
                         </p>

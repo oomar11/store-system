@@ -87,6 +87,8 @@ export interface Customer {
   /** شريحة السعر (null = تجزئة / الافتراضي) */
   price_tier_id?: string | null;
   price_tier?: PriceTier | null;
+  /** ربط 1:1 بمورد لنفس الشخص (رصيد صافي ليّا/عليّا) */
+  linked_supplier_id?: string | null;
   /** عند false لا يظهر في نقطة البيع والفواتير */
   is_active?: boolean;
   /** آخر فاتورة أو دفعة */
@@ -105,6 +107,8 @@ export interface Supplier {
   /** الرصيد الابتدائي عند الإنشاء/التعديل */
   opening_balance?: number;
   notes?: string;
+  /** ربط 1:1 بعميل لنفس الشخص (رصيد صافي ليّا/عليّا) */
+  linked_customer_id?: string | null;
   /** عند false لا يظهر في المشتريات والفواتير */
   is_active?: boolean;
   /** آخر فاتورة أو دفعة */

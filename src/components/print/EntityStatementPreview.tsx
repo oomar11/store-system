@@ -39,6 +39,64 @@ interface EntityStatementPreviewProps {
   onClose: () => void;
   initialDateFrom?: string;
   initialDateTo?: string;
+  /** Optional dual-role counterpart for combined statement */
+  linkedParty?: {
+    id: string;
+    kind: PartyKind;
+    name: string;
+    balance: number;
+  } | null;
+  netBalanceLabel?: string;
+}
+
+function mapPaymentRows(
+  rows: Record<string, unknown>[],
+  partyKind: PartyKind
+): StatementInvoice[] {
+  return rows.map((row) => {
+    const safe = Array.isArray(row.safes) ? row.safes[0] : row.safes;
+    const allocs = (row.party_payment_allocations || []) as {
+      amount: number;
+      invoices?:
+        | { invoice_number?: string }
+        | { invoice_number?: string }[]
+        | null;
+    }[];
+    const allocNote = allocs
+      .map((a) => {
+        const inv = Array.isArray(a.invoices) ? a.invoices[0] : a.invoices;
+        return `${inv?.invoice_number || "فاتورة"}: ${Number(a.amount).toFixed(2)}`;
+      })
+      .join(" · ");
+    const amount = Number(row.amount) || 0;
+    const isSettlement = Boolean(row.is_settlement);
+    const shortId = String(row.id).replace(/-/g, "").slice(0, 8).toUpperCase();
+    const prefix = isSettlement
+      ? "مقاصة"
+      : partyKind === "customer"
+        ? "تحص"
+        : "سداد";
+    return {
+      id: `party-pay-${row.id}`,
+      invoice_number: `${prefix}-${shortId}`,
+      type: isSettlement
+        ? "settlement"
+        : partyKind === "customer"
+          ? "collection"
+          : "disbursement",
+      total: amount,
+      paid_amount: amount,
+      payment_method: isSettlement
+        ? "مقاصة"
+        : (safe as { name?: string } | null)?.name || "خزنة",
+      created_at: row.created_at as string,
+      status: "completed",
+      notes: [row.notes, allocNote ? `توزيع: ${allocNote}` : null]
+        .filter(Boolean)
+        .join(" — "),
+      isPartyPayment: true,
+    };
+  });
 }
 
 export function EntityStatementPreview({
@@ -48,12 +106,15 @@ export function EntityStatementPreview({
   onClose,
   initialDateFrom,
   initialDateTo,
+  linkedParty = null,
+  netBalanceLabel,
 }: EntityStatementPreviewProps) {
   const supabase = createClient();
   const today = new Date().toISOString().split("T")[0];
   const monthStart = new Date();
   monthStart.setDate(1);
   const defaultFrom = monthStart.toISOString().split("T")[0];
+  const isDual = Boolean(linkedParty);
 
   const [dateFrom, setDateFrom] = useState(initialDateFrom || defaultFrom);
   const [dateTo, setDateTo] = useState(initialDateTo || today);
@@ -61,7 +122,11 @@ export function EntityStatementPreview({
   const [loading, setLoading] = useState(true);
   const [notes, setNotes] = useState("");
   const [title, setTitle] = useState(
-    kind === "customer" ? `كشف حساب عميل — ${party.name}` : `كشف حساب مورد — ${party.name}`
+    isDual
+      ? `كشف حساب موحّد — ${party.name}`
+      : kind === "customer"
+        ? `كشف حساب عميل — ${party.name}`
+        : `كشف حساب مورد — ${party.name}`
   );
   const canPortal = typeof document !== "undefined";
   const printedAt = useMemo(() => new Date(), []);
@@ -77,85 +142,103 @@ export function EntityStatementPreview({
   useEffect(() => {
     void fetchInvoices();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateFrom, dateTo, party.id, kind]);
+  }, [dateFrom, dateTo, party.id, kind, linkedParty?.id]);
 
   async function fetchInvoices() {
     setLoading(true);
-    const types =
-      kind === "customer"
-        ? ["sale", "sale_return"]
-        : ["purchase", "purchase_return"];
 
-    let query = supabase
-      .from("invoices")
-      .select(
-        "id, invoice_number, type, total, paid_amount, payment_method, created_at, status"
-      )
-      .in("type", types)
-      .eq("status", "completed")
-      .order("created_at", { ascending: true });
+    async function fetchSide(sideKind: PartyKind, sideId: string) {
+      const types =
+        sideKind === "customer"
+          ? ["sale", "sale_return"]
+          : ["purchase", "purchase_return"];
 
-    if (kind === "customer") {
-      query = query.eq("customer_id", party.id);
-    } else {
-      query = query.eq("supplier_id", party.id);
+      let query = supabase
+        .from("invoices")
+        .select(
+          "id, invoice_number, type, total, paid_amount, payment_method, created_at, status"
+        )
+        .in("type", types)
+        .eq("status", "completed")
+        .order("created_at", { ascending: true });
+
+      if (sideKind === "customer") {
+        query = query.eq("customer_id", sideId);
+      } else {
+        query = query.eq("supplier_id", sideId);
+      }
+      if (dateFrom) query = query.gte("created_at", `${dateFrom}T00:00:00`);
+      if (dateTo) query = query.lte("created_at", `${dateTo}T23:59:59`);
+
+      let paymentsQuery = supabase
+        .from("party_payments")
+        .select(
+          "id, party_type, amount, safe_id, notes, created_at, is_settlement, settlement_group_id, safes(name), party_payment_allocations(id, invoice_id, amount, invoices(invoice_number))"
+        )
+        .eq("party_type", sideKind)
+        .eq("party_id", sideId)
+        .order("created_at", { ascending: true });
+      if (dateFrom) {
+        paymentsQuery = paymentsQuery.gte(
+          "created_at",
+          `${dateFrom}T00:00:00`
+        );
+      }
+      if (dateTo) {
+        paymentsQuery = paymentsQuery.lte(
+          "created_at",
+          `${dateTo}T23:59:59`
+        );
+      }
+
+      const [invRes, payRes] = await Promise.all([query, paymentsQuery]);
+      const invoiceRows = ((invRes.data as StatementInvoice[]) || []).map(
+        (inv) => ({ ...inv, isPartyPayment: false })
+      );
+      const paymentRows = mapPaymentRows(
+        (payRes.data || []) as Record<string, unknown>[],
+        sideKind
+      );
+      return { invoiceRows, paymentRows, rawPayments: payRes.data || [] };
     }
-    if (dateFrom) query = query.gte("created_at", `${dateFrom}T00:00:00`);
-    if (dateTo) query = query.lte("created_at", `${dateTo}T23:59:59`);
 
-    let paymentsQuery = supabase
-      .from("party_payments")
-      .select(
-        "id, party_type, amount, safe_id, notes, created_at, safes(name), party_payment_allocations(id, invoice_id, amount, invoices(invoice_number))"
-      )
-      .eq("party_type", kind)
-      .eq("party_id", party.id)
-      .order("created_at", { ascending: true });
-    if (dateFrom) {
-      paymentsQuery = paymentsQuery.gte("created_at", `${dateFrom}T00:00:00`);
+    const primary = await fetchSide(kind, party.id);
+    let invoiceRows = primary.invoiceRows;
+    let paymentRows = primary.paymentRows;
+
+    if (linkedParty) {
+      const secondary = await fetchSide(linkedParty.kind, linkedParty.id);
+      invoiceRows = [...invoiceRows, ...secondary.invoiceRows];
+      const seenGroups = new Set<string>();
+      const seenIds = new Set(paymentRows.map((p) => p.id));
+      for (const raw of secondary.rawPayments as {
+        id: string;
+        is_settlement?: boolean;
+        settlement_group_id?: string | null;
+      }[]) {
+        if (raw.is_settlement && raw.settlement_group_id) {
+          if (seenGroups.has(raw.settlement_group_id)) continue;
+          const already = (primary.rawPayments as typeof secondary.rawPayments).some(
+            (p) =>
+              (p as { settlement_group_id?: string }).settlement_group_id ===
+              raw.settlement_group_id
+          );
+          if (already) {
+            seenGroups.add(raw.settlement_group_id);
+            continue;
+          }
+          seenGroups.add(raw.settlement_group_id);
+        }
+        const mapped = mapPaymentRows(
+          [raw as unknown as Record<string, unknown>],
+          linkedParty.kind
+        )[0];
+        if (mapped && !seenIds.has(mapped.id)) {
+          paymentRows.push(mapped);
+          seenIds.add(mapped.id);
+        }
+      }
     }
-    if (dateTo) {
-      paymentsQuery = paymentsQuery.lte("created_at", `${dateTo}T23:59:59`);
-    }
-
-    const [invRes, payRes] = await Promise.all([query, paymentsQuery]);
-    const invoiceRows = ((invRes.data as StatementInvoice[]) || []).map(
-      (inv) => ({ ...inv, isPartyPayment: false })
-    );
-
-    const paymentRows: StatementInvoice[] = (payRes.data || []).map((row) => {
-      const safe = Array.isArray(row.safes) ? row.safes[0] : row.safes;
-      const allocs = (row.party_payment_allocations || []) as {
-        amount: number;
-        invoices?:
-          | { invoice_number?: string }
-          | { invoice_number?: string }[]
-          | null;
-      }[];
-      const allocNote = allocs
-        .map((a) => {
-          const inv = Array.isArray(a.invoices) ? a.invoices[0] : a.invoices;
-          return `${inv?.invoice_number || "فاتورة"}: ${Number(a.amount).toFixed(2)}`;
-        })
-        .join(" · ");
-      const amount = Number(row.amount) || 0;
-      const prefix = kind === "customer" ? "تحص" : "سداد";
-      const shortId = String(row.id).replace(/-/g, "").slice(0, 8).toUpperCase();
-      return {
-        id: `party-pay-${row.id}`,
-        invoice_number: `${prefix}-${shortId}`,
-        type: kind === "customer" ? "collection" : "disbursement",
-        total: amount,
-        paid_amount: amount,
-        payment_method: (safe as { name?: string } | null)?.name || "خزنة",
-        created_at: row.created_at as string,
-        status: "completed",
-        notes: [row.notes, allocNote ? `توزيع: ${allocNote}` : null]
-          .filter(Boolean)
-          .join(" — "),
-        isPartyPayment: true,
-      };
-    });
 
     const merged = [...invoiceRows, ...paymentRows].sort(
       (a, b) =>
@@ -166,19 +249,33 @@ export function EntityStatementPreview({
   }
 
   const periodTotal = invoices.reduce((s, inv) => {
-    if (inv.type === "collection" || inv.type === "disbursement") return s;
+    if (
+      inv.type === "collection" ||
+      inv.type === "disbursement" ||
+      inv.type === "settlement"
+    )
+      return s;
     if (inv.type.includes("return")) return s - Number(inv.total);
     return s + Number(inv.total);
   }, 0);
 
   const periodPaid = invoices.reduce((s, inv) => {
-    if (inv.type === "collection" || inv.type === "disbursement") return s;
+    if (
+      inv.type === "collection" ||
+      inv.type === "disbursement" ||
+      inv.type === "settlement"
+    )
+      return s;
     if (inv.type.includes("return")) return s - Number(inv.paid_amount);
     return s + Number(inv.paid_amount);
   }, 0);
 
   const periodCollections = invoices.reduce((s, inv) => {
-    if (inv.type === "collection" || inv.type === "disbursement") {
+    if (
+      inv.type === "collection" ||
+      inv.type === "disbursement" ||
+      inv.type === "settlement"
+    ) {
       return s + Number(inv.paid_amount);
     }
     return s;
@@ -225,18 +322,30 @@ export function EntityStatementPreview({
             <span>{party.address}</span>
           </div>
         )}
+        {linkedParty ? (
+          <div className="flex justify-between text-slate-600">
+            <span>مربوط بـ:</span>
+            <span className="font-semibold">{linkedParty.name}</span>
+          </div>
+        ) : null}
         <div className="flex justify-between border-t border-slate-100 pt-1.5 font-bold">
-          <span>الرصيد الحالي:</span>
+          <span>{netBalanceLabel ? "الرصيد الصافي:" : "الرصيد الحالي:"}</span>
           <span
             className={
-              party.balance > 0
-                ? "text-red-700"
-                : party.balance < 0
-                  ? "text-green-700"
-                  : ""
+              netBalanceLabel
+                ? netBalanceLabel.includes("عليّا")
+                  ? "text-red-700"
+                  : netBalanceLabel.includes("ليّا")
+                    ? "text-green-700"
+                    : ""
+                : party.balance > 0
+                  ? "text-red-700"
+                  : party.balance < 0
+                    ? "text-green-700"
+                    : ""
             }
           >
-            {formatCurrency(party.balance)}
+            {netBalanceLabel || formatCurrency(party.balance)}
           </span>
         </div>
       </div>
