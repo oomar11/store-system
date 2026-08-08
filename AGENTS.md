@@ -55,15 +55,19 @@ Always verify changes on this host (not `store-system-iota` or Preview URLs).
 بعد إضافة المتغيرات: Redeploy، ثم الإعدادات → مساعد جارفس → تفعيل المساعد.  
 فحص سريع: `GET https://store-system-rho.vercel.app/api/telegram/webhook` لازم يرجّع `telegram_configured: true`.
 
-### جسر خزنة الورشة (aa → store)
-- المتجر وخزنته = مصدر الحقيقة للنقد؛ الورشة ترسل دفعات (إيداع) ومصروفات (سحب).
-- APIs: `GET /api/workshop/safes` · `POST /api/workshop/safe-movement` · `GET /api/workshop/safe-movement` (حالة `configured`)
-- فواتير للورشة: `GET|POST /api/workshop/invoices` + جدول `workshop_invoice_inbox` (علامة «للورشة» في POS)
-- صرف من موبايل الورشة: `GET /api/workshop/products?q=` · `POST /api/workshop/issue` (فاتورة للورشة + تعيين مشروع فوري)
-- بيع «للورشة» = صرف داخلي: مكسب+مخزون بدون حركة خزنة ولا مديونية (`p_for_workshop` في `create_completed_invoice`)
-- المصادقة: `Authorization: Bearer <secret>` أو هيدر `x-workshop-bridge-secret`
-- المفتاح من: جدول `workshop_bridge_config` (مضبوط) أو متغير `WORKSHOP_BRIDGE_SECRET`
-- Migration: `20260805_workshop_safe_bridge.sql` + `20260805_workshop_bridge_config.sql` + `20260805_workshop_invoice_inbox.sql`
+### جسر الورش (aa / plisse → store)
+- المتجر = مصدر الحقيقة للنقد + العملاء/الموردين + كشف الحساب الموحّد.
+- خزنة: `GET /api/workshop/safes` · `POST|GET /api/workshop/safe-movement`
+- فواتير للورشة: `GET|POST /api/workshop/invoices` + جدول `workshop_invoice_inbox`
+- صرف خامات: `GET /api/workshop/products` · `POST /api/workshop/issue` (`p_for_workshop`)
+- أطراف: `GET|POST /api/workshop/parties/customers` · `GET|POST /api/workshop/parties/suppliers`
+- أستاذ عبر البرامج: `POST /api/workshop/parties/ledger` → جدول `cross_app_ledger_entries`
+- كشف موحّد: `GET /api/workshop/parties/statement?customer_id=`
+- توريد خارجي: `POST /api/workshop/purchases` → فاتورة شراء على مورد (بدون مخزون فعلي)
+- جداول ربط: `workshop_party_map` · `cross_app_ledger_entries`
+- المصادقة: `Authorization: Bearer <secret>` أو `x-workshop-bridge-secret`
+- المفتاح: `workshop_bridge_config` أو `WORKSHOP_BRIDGE_SECRET`
+- Migrations: `20260805_workshop_*.sql` + `20260810_cross_app_parties_ledger.sql`
 
 ## Commit Attribution
 AI commits MUST include:
