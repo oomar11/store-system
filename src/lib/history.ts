@@ -189,9 +189,9 @@ export async function fetchCustomerHistory(customerId: string): Promise<PartyInv
     .in("type", ["sale", "sale_return"])
     .order("created_at", { ascending: false })
     .limit(200);
-  return ((data || []) as PartyInvoiceRow[]).filter(
-    (row) => row.status !== "cancelled"
-  );
+  return ((data || []) as PartyInvoiceRow[])
+    .filter((row) => row.status !== "cancelled")
+    .map((row) => ({ ...row, sourceSystem: "store" as const }));
 }
 
 export async function fetchSupplierHistory(supplierId: string): Promise<PartyInvoiceRow[]> {
@@ -205,9 +205,9 @@ export async function fetchSupplierHistory(supplierId: string): Promise<PartyInv
     .in("type", ["purchase", "purchase_return"])
     .order("created_at", { ascending: false })
     .limit(200);
-  return ((data || []) as PartyInvoiceRow[]).filter(
-    (row) => row.status !== "cancelled"
-  );
+  return ((data || []) as PartyInvoiceRow[])
+    .filter((row) => row.status !== "cancelled")
+    .map((row) => ({ ...row, sourceSystem: "store" as const }));
 }
 
 /** حركات الورش المرتبطة بطرف في المحل (PVC / بلسية) */
@@ -298,5 +298,6 @@ export function partyPaymentToHistoryRow(payment: {
     payment_method: isSettlement ? "مقاصة" : payment.safe_name || null,
     isPartyPayment: true,
     partyPaymentId: payment.id,
+    sourceSystem: "store",
   };
 }

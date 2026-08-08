@@ -1215,6 +1215,11 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           </div>
         </div>
 
+        <div className="border-b border-[#dbe7f5] bg-[#eef6ff] px-4 py-2.5 text-[11px] leading-relaxed text-[#0b5fc4]">
+          كشف موحّد بالتواريخ: مبيعات/مشتريات المحل + تحصيلات/سداد + حركات ورشة
+          PVC والبلسية (إن وُجدت). فلتر «بيع ورشة / تحصيل ورشة» من القائمة فوق.
+        </div>
+
         <div className="grid grid-cols-2 gap-2 border-b border-[#eef1f6] bg-[#f8fafc] px-4 py-2.5 text-xs sm:grid-cols-3">
           <div>
             <span className="text-[#687386]">عدد العمليات: </span>
@@ -1244,6 +1249,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
               <thead className="sticky top-0 z-10 bg-[#f3f6fa] text-[#526176]">
                 <tr>
                   <th className="px-3 py-2.5 text-right font-semibold">التاريخ</th>
+                  <th className="px-3 py-2.5 text-right font-semibold">المصدر</th>
                   <th className="px-3 py-2.5 text-right font-semibold">المستند</th>
                   <th className="px-3 py-2.5 text-right font-semibold">النوع</th>
                   <th className="px-3 py-2.5 text-right font-semibold">الإجمالي</th>
@@ -1277,6 +1283,23 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
                       >
                         <td className="px-3 py-2.5 text-[#526176]">
                           {formatDateShort(row.created_at)}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <span
+                            className={
+                              row.sourceSystem === "aa"
+                                ? "rounded-md bg-[#fff1e6] px-1.5 py-0.5 text-[11px] font-bold text-[#9a5b1a]"
+                                : row.sourceSystem === "plisse"
+                                  ? "rounded-md bg-[#eee8ff] px-1.5 py-0.5 text-[11px] font-bold text-[#5b3d9a]"
+                                  : "rounded-md bg-[#eef2f7] px-1.5 py-0.5 text-[11px] font-bold text-[#526176]"
+                            }
+                          >
+                            {row.sourceSystem === "aa"
+                              ? "PVC"
+                              : row.sourceSystem === "plisse"
+                                ? "بلسية"
+                                : "محل"}
+                          </span>
                         </td>
                         <td className="px-3 py-2.5 font-mono text-xs font-semibold text-[#1473e6]">
                           {row.invoice_number}
