@@ -59,6 +59,7 @@ Always verify changes on this host (not `store-system-iota` or Preview URLs).
 - المتجر وخزنته = مصدر الحقيقة للنقد؛ الورشة ترسل دفعات (إيداع) ومصروفات (سحب).
 - APIs: `GET /api/workshop/safes` · `POST /api/workshop/safe-movement` · `GET /api/workshop/safe-movement` (حالة `configured`)
 - فواتير للورشة: `GET|POST /api/workshop/invoices` + جدول `workshop_invoice_inbox` (علامة «للورشة» في POS)
+- صرف من موبايل الورشة: `GET /api/workshop/products?q=` · `POST /api/workshop/issue` (فاتورة للورشة + تعيين مشروع فوري)
 - بيع «للورشة» = صرف داخلي: مكسب+مخزون بدون حركة خزنة ولا مديونية (`p_for_workshop` في `create_completed_invoice`)
 - المصادقة: `Authorization: Bearer <secret>` أو هيدر `x-workshop-bridge-secret`
 - المفتاح من: جدول `workshop_bridge_config` (مضبوط) أو متغير `WORKSHOP_BRIDGE_SECRET`
