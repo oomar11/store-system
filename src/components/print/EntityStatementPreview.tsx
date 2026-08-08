@@ -24,6 +24,7 @@ type StatementInvoice = {
   status: string;
   notes?: string | null;
   isPartyPayment?: boolean;
+  isCrossApp?: boolean;
 };
 
 interface EntityStatementPreviewProps {
@@ -191,7 +192,26 @@ export function EntityStatementPreview({
         );
       }
 
-      const [invRes, payRes] = await Promise.all([query, paymentsQuery]);
+      let ledgerQuery = supabase
+        .from("cross_app_ledger_entries")
+        .select(
+          "id, source_system, source_ref, entry_type, amount, direction, occurred_at, notes, project_label"
+        )
+        .eq("party_type", sideKind)
+        .eq("party_id", sideId)
+        .order("occurred_at", { ascending: true });
+      if (dateFrom) {
+        ledgerQuery = ledgerQuery.gte("occurred_at", `${dateFrom}T00:00:00`);
+      }
+      if (dateTo) {
+        ledgerQuery = ledgerQuery.lte("occurred_at", `${dateTo}T23:59:59`);
+      }
+
+      const [invRes, payRes, ledgerRes] = await Promise.all([
+        query,
+        paymentsQuery,
+        ledgerQuery,
+      ]);
       const invoiceRows = ((invRes.data as StatementInvoice[]) || []).map(
         (inv) => ({ ...inv, isPartyPayment: false })
       );
@@ -199,7 +219,43 @@ export function EntityStatementPreview({
         (payRes.data || []) as Record<string, unknown>[],
         sideKind
       );
-      return { invoiceRows, paymentRows, rawPayments: payRes.data || [] };
+      const ledgerRows: StatementInvoice[] = (
+        (ledgerRes.data || []) as {
+          id: string;
+          source_system: string;
+          source_ref: string;
+          entry_type: string;
+          amount: number;
+          direction: string;
+          occurred_at: string;
+          notes?: string | null;
+          project_label?: string | null;
+        }[]
+      ).map((entry) => {
+        const amount = Number(entry.amount) || 0;
+        const isCredit = entry.direction === "credit";
+        const srcLabel =
+          entry.source_system === "plisse" ? "بلسية" : "PVC";
+        return {
+          id: `xapp-${entry.id}`,
+          invoice_number: String(entry.source_ref || "").slice(0, 24),
+          type: String(entry.entry_type || "workshop_adjustment"),
+          total: amount,
+          paid_amount: isCredit ? amount : 0,
+          payment_method: srcLabel,
+          created_at: entry.occurred_at,
+          status: "completed",
+          notes: [srcLabel, entry.project_label, entry.notes]
+            .filter(Boolean)
+            .join(" — "),
+          isCrossApp: true,
+        };
+      });
+      return {
+        invoiceRows: [...invoiceRows, ...ledgerRows],
+        paymentRows,
+        rawPayments: payRes.data || [],
+      };
     }
 
     const primary = await fetchSide(kind, party.id);
@@ -252,7 +308,9 @@ export function EntityStatementPreview({
     if (
       inv.type === "collection" ||
       inv.type === "disbursement" ||
-      inv.type === "settlement"
+      inv.type === "settlement" ||
+      inv.type === "workshop_collection" ||
+      inv.type === "workshop_void"
     )
       return s;
     if (inv.type.includes("return")) return s - Number(inv.total);
@@ -263,7 +321,8 @@ export function EntityStatementPreview({
     if (
       inv.type === "collection" ||
       inv.type === "disbursement" ||
-      inv.type === "settlement"
+      inv.type === "settlement" ||
+      inv.type.startsWith("workshop_")
     )
       return s;
     if (inv.type.includes("return")) return s - Number(inv.paid_amount);
@@ -274,9 +333,10 @@ export function EntityStatementPreview({
     if (
       inv.type === "collection" ||
       inv.type === "disbursement" ||
-      inv.type === "settlement"
+      inv.type === "settlement" ||
+      inv.type === "workshop_collection"
     ) {
-      return s + Number(inv.paid_amount);
+      return s + Number(inv.paid_amount || inv.total);
     }
     return s;
   }, 0);

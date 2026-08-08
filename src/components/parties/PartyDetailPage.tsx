@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase";
 import { formatCurrency, formatDateShort, smartSearchMatch } from "@/lib/utils";
 import {
   buildPartyOpeningRow,
+  fetchCrossAppPartyHistory,
   fetchCustomerHistory,
   fetchSupplierHistory,
   invoiceTypeLabel,
@@ -81,7 +82,10 @@ type TypeFilter =
   | "opening"
   | "collection"
   | "disbursement"
-  | "settlement";
+  | "settlement"
+  | "workshop_sale"
+  | "workshop_collection"
+  | "workshop_adjustment";
 
 interface PartyDetailPageProps {
   kind: PartyKind;
@@ -273,19 +277,21 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
 
     try {
       const table = kind === "customer" ? "customers" : "suppliers";
-      const [partyRes, history, settingsRes, payments] = await withTimeout(
-        Promise.all([
-          supabase.from(table).select("*").eq("id", partyId).maybeSingle(),
-          kind === "customer"
-            ? fetchCustomerHistory(partyId)
-            : fetchSupplierHistory(partyId),
-          supabase.from("settings").select("*").limit(1).maybeSingle(),
-          listPartyPayments(supabase, kind, partyId).catch(
-            () => [] as PartyPaymentRow[]
-          ),
-        ]),
-        5000
-      );
+      const [partyRes, history, crossAppHistory, settingsRes, payments] =
+        await withTimeout(
+          Promise.all([
+            supabase.from(table).select("*").eq("id", partyId).maybeSingle(),
+            kind === "customer"
+              ? fetchCustomerHistory(partyId)
+              : fetchSupplierHistory(partyId),
+            fetchCrossAppPartyHistory(kind, partyId),
+            supabase.from("settings").select("*").limit(1).maybeSingle(),
+            listPartyPayments(supabase, kind, partyId).catch(
+              () => [] as PartyPaymentRow[]
+            ),
+          ]),
+          5000
+        );
 
       if (!partyRes.data) {
         setParty(null);
@@ -304,24 +310,31 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
 
       let linkedData: Customer | Supplier | null = null;
       let linkedHistory: PartyInvoiceRow[] = [];
+      let linkedCrossApp: PartyInvoiceRow[] = [];
       let linkedPayments: PartyPaymentRow[] = [];
 
       if (linkedId) {
         const linkedTable = kind === "customer" ? "suppliers" : "customers";
-        const [linkedRes, linkedHist, linkedPays] = await Promise.all([
-          supabase.from(linkedTable).select("*").eq("id", linkedId).maybeSingle(),
-          kind === "customer"
-            ? fetchSupplierHistory(linkedId)
-            : fetchCustomerHistory(linkedId),
-          listPartyPayments(
-            supabase,
-            kind === "customer" ? "supplier" : "customer",
-            linkedId
-          ).catch(() => [] as PartyPaymentRow[]),
-        ]);
+        const linkedKind = kind === "customer" ? "supplier" : "customer";
+        const [linkedRes, linkedHist, linkedXApp, linkedPays] =
+          await Promise.all([
+            supabase
+              .from(linkedTable)
+              .select("*")
+              .eq("id", linkedId)
+              .maybeSingle(),
+            kind === "customer"
+              ? fetchSupplierHistory(linkedId)
+              : fetchCustomerHistory(linkedId),
+            fetchCrossAppPartyHistory(linkedKind, linkedId),
+            listPartyPayments(supabase, linkedKind, linkedId).catch(
+              () => [] as PartyPaymentRow[]
+            ),
+          ]);
         if (linkedRes.data) {
           linkedData = linkedRes.data as Customer | Supplier;
           linkedHistory = linkedHist;
+          linkedCrossApp = linkedXApp;
           linkedPayments = linkedPays;
         }
       }
@@ -358,6 +371,8 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
         ...openingRows,
         ...history,
         ...linkedHistory,
+        ...crossAppHistory,
+        ...linkedCrossApp,
         ...paymentRows,
       ].sort(
         (a, b) =>
@@ -802,6 +817,14 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
       );
       return;
     }
+    if (row.isCrossApp) {
+      toastInfo(
+        row.sourceSystem === "plisse"
+          ? "حركة من برنامج البلسية — تظهر في الكشف الموحّد."
+          : "حركة من ورشة PVC — تظهر في الكشف الموحّد."
+      );
+      return;
+    }
     if (row.isPartyPayment && row.partyPaymentId) {
       if (row.type === "settlement") {
         toastInfo("هذه حركة مقاصة — يمكن حذفها من جدول التحصيلات/السدادات إن لزم.");
@@ -887,6 +910,9 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
         ["collection", "تحصيل"],
         ["disbursement", "سداد"],
         ["settlement", "مقاصة"],
+        ["workshop_sale", "بيع ورشة"],
+        ["workshop_collection", "تحصيل ورشة"],
+        ["workshop_adjustment", "تسوية ورشة"],
         ["opening", "رصيد افتتاحي"],
       ] as const)
     : kind === "customer"
@@ -896,6 +922,9 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           ["sale_return", "مرتجع بيع"],
           ["collection", "تحصيل"],
           ["settlement", "مقاصة"],
+          ["workshop_sale", "بيع ورشة"],
+          ["workshop_collection", "تحصيل ورشة"],
+          ["workshop_adjustment", "تسوية ورشة"],
           ["opening", "رصيد افتتاحي"],
         ] as const)
       : ([
@@ -904,6 +933,9 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           ["purchase_return", "مرتجع شراء"],
           ["disbursement", "سداد"],
           ["settlement", "مقاصة"],
+          ["workshop_sale", "بيع ورشة"],
+          ["workshop_collection", "تحصيل ورشة"],
+          ["workshop_adjustment", "تسوية ورشة"],
           ["opening", "رصيد افتتاحي"],
         ] as const);
 
@@ -1252,7 +1284,9 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
                         <td className="px-3 py-2.5">
                           {invoiceTypeLabel(row.type)}
                           {row.notes &&
-                          (row.type === "opening" || row.isPartyPayment) ? (
+                          (row.type === "opening" ||
+                            row.isPartyPayment ||
+                            row.isCrossApp) ? (
                             <span className="mt-0.5 block text-[11px] text-[#687386]">
                               {row.notes}
                             </span>
@@ -1260,7 +1294,8 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
                         </td>
                         <td className="px-3 py-2.5 font-semibold">
                           {row.type === "collection" ||
-                          row.type === "disbursement"
+                          row.type === "disbursement" ||
+                          row.type === "workshop_collection"
                             ? "—"
                             : formatCurrency(row.total)}
                         </td>

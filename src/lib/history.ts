@@ -34,6 +34,9 @@ export type PartyInvoiceRow = {
   /** صف تحصيل/سداد مجمّع من party_payments */
   isPartyPayment?: boolean;
   partyPaymentId?: string;
+  /** حركة من ورشة (PVC / بلسية) عبر الجسر */
+  isCrossApp?: boolean;
+  sourceSystem?: "aa" | "plisse" | "store";
 };
 
 const typeLabels: Record<string, string> = {
@@ -45,6 +48,10 @@ const typeLabels: Record<string, string> = {
   collection: "تحصيل",
   disbursement: "سداد",
   settlement: "مقاصة",
+  workshop_sale: "بيع ورشة",
+  workshop_collection: "تحصيل ورشة",
+  workshop_adjustment: "تسوية ورشة",
+  workshop_void: "إلغاء ورشة",
 };
 
 export function invoiceTypeLabel(type: string) {
@@ -201,6 +208,51 @@ export async function fetchSupplierHistory(supplierId: string): Promise<PartyInv
   return ((data || []) as PartyInvoiceRow[]).filter(
     (row) => row.status !== "cancelled"
   );
+}
+
+/** حركات الورش المرتبطة بطرف في المحل (PVC / بلسية) */
+export async function fetchCrossAppPartyHistory(
+  partyType: "customer" | "supplier",
+  partyId: string
+): Promise<PartyInvoiceRow[]> {
+  const supabase = createClient();
+  const { data, error } = await supabase
+    .from("cross_app_ledger_entries")
+    .select(
+      "id, source_system, source_ref, entry_type, amount, direction, occurred_at, notes, project_label"
+    )
+    .eq("party_type", partyType)
+    .eq("party_id", partyId)
+    .order("occurred_at", { ascending: false })
+    .limit(500);
+
+  if (error) {
+    // Table may not exist yet on older deploys
+    console.warn("fetchCrossAppPartyHistory", error.message);
+    return [];
+  }
+
+  return (data || []).map((entry) => {
+    const amount = Number(entry.amount) || 0;
+    const isCredit = entry.direction === "credit";
+    const src = entry.source_system === "plisse" ? "plisse" : "aa";
+    const srcLabel = src === "plisse" ? "بلسية" : "PVC";
+    return {
+      id: `xapp-${entry.id}`,
+      invoice_number: String(entry.source_ref || "").slice(0, 24),
+      type: String(entry.entry_type || "workshop_adjustment"),
+      total: amount,
+      paid_amount: isCredit ? amount : 0,
+      created_at: entry.occurred_at,
+      status: "completed",
+      notes: [srcLabel, entry.project_label, entry.notes]
+        .filter(Boolean)
+        .join(" — "),
+      payment_method: srcLabel,
+      isCrossApp: true,
+      sourceSystem: src,
+    } satisfies PartyInvoiceRow;
+  });
 }
 
 /** تحويل دفعة مجمّعة لصف يظهر في حركة العميل/المورد والطباعة */

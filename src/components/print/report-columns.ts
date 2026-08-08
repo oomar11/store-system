@@ -529,16 +529,27 @@ export const statementInvoiceColumns: ReportColumn[] = [
       if (t === "collection") return "تحصيل";
       if (t === "disbursement") return "سداد";
       if (t === "settlement") return "مقاصة";
+      if (t === "workshop_sale") return "بيع ورشة";
+      if (t === "workshop_collection") return "تحصيل ورشة";
+      if (t === "workshop_adjustment") return "تسوية ورشة";
+      if (t === "workshop_void") return "إلغاء ورشة";
       return t || "—";
     },
   },
   {
     key: "payment_method",
-    label: "الدفع",
+    label: "المصدر / الدفع",
     getValue: (r) => {
       const t = String(r.type ?? "");
-      if (t === "collection" || t === "disbursement" || t === "settlement") {
-        return String(r.payment_method || (t === "settlement" ? "مقاصة" : "خزنة"));
+      if (
+        t === "collection" ||
+        t === "disbursement" ||
+        t === "settlement" ||
+        t.startsWith("workshop_")
+      ) {
+        return String(
+          r.payment_method || (t === "settlement" ? "مقاصة" : "خزنة")
+        );
       }
       return paymentLabel(String(r.payment_method ?? ""));
     },
@@ -548,7 +559,12 @@ export const statementInvoiceColumns: ReportColumn[] = [
     label: "الإجمالي",
     getValue: (r) => {
       const t = String(r.type ?? "");
-      if (t === "collection" || t === "disbursement" || t === "settlement")
+      if (
+        t === "collection" ||
+        t === "disbursement" ||
+        t === "settlement" ||
+        t === "workshop_collection"
+      )
         return "—";
       return formatCurrency(Number(r.total ?? 0));
     },
@@ -567,7 +583,8 @@ export const statementInvoiceColumns: ReportColumn[] = [
         t === "collection" ||
         t === "disbursement" ||
         t === "settlement" ||
-        t === "opening"
+        t === "opening" ||
+        t.startsWith("workshop_")
       ) {
         return "—";
       }
@@ -600,6 +617,10 @@ export const partyHistoryColumns: ReportColumn[] = [
       if (t === "collection") return "تحصيل";
       if (t === "disbursement") return "سداد";
       if (t === "settlement") return "مقاصة";
+      if (t === "workshop_sale") return "بيع ورشة";
+      if (t === "workshop_collection") return "تحصيل ورشة";
+      if (t === "workshop_adjustment") return "تسوية ورشة";
+      if (t === "workshop_void") return "إلغاء ورشة";
       return t || "—";
     },
   },
@@ -608,7 +629,12 @@ export const partyHistoryColumns: ReportColumn[] = [
     label: "الإجمالي",
     getValue: (r) => {
       const t = String(r.type ?? "");
-      if (t === "collection" || t === "disbursement" || t === "settlement")
+      if (
+        t === "collection" ||
+        t === "disbursement" ||
+        t === "settlement" ||
+        t === "workshop_collection"
+      )
         return "—";
       return formatCurrency(Number(r.total ?? 0));
     },
@@ -626,7 +652,8 @@ export const partyHistoryColumns: ReportColumn[] = [
         r.type === "opening" ||
         r.type === "collection" ||
         r.type === "disbursement" ||
-        r.type === "settlement"
+        r.type === "settlement" ||
+        String(r.type ?? "").startsWith("workshop_")
       ) {
         return "—";
       }
