@@ -23,6 +23,15 @@ import {
   partyPaymentDocNumber,
   type PartyPaymentRow,
 } from "@/lib/party-payments";
+import {
+  computeNetBalance,
+  computeNettingOffset,
+  ensureCustomerForSupplier,
+  ensureSupplierForCustomer,
+  linkPartyAccounts,
+  settlePartyNetting,
+  unlinkPartyAccounts,
+} from "@/lib/party-link";
 import { PrintReportPreview } from "@/components/print/PrintReportPreview";
 import { PrintListButton } from "@/components/print/PrintListButton";
 import { EntityStatementPreview } from "@/components/print/EntityStatementPreview";
@@ -48,7 +57,10 @@ import {
   ChevronUp,
   Copy,
   ExternalLink,
+  Link2,
+  Link2Off,
   Printer,
+  Scale,
   Trash2,
   User,
   Users,
@@ -57,6 +69,7 @@ import {
 import { useToast } from "@/components/ui/Toast";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { useAuth } from "@/hooks/useAuth";
+import { Modal } from "@/components/ui/Modal";
 
 type PartyKind = "customer" | "supplier";
 type TypeFilter =
@@ -67,7 +80,8 @@ type TypeFilter =
   | "purchase_return"
   | "opening"
   | "collection"
-  | "disbursement";
+  | "disbursement"
+  | "settlement";
 
 interface PartyDetailPageProps {
   kind: PartyKind;
@@ -105,14 +119,18 @@ type InlineInvoicePrintState = {
 export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
   const router = useRouter();
   const supabase = createClient();
-  const { profile } = useAuth();
+  const { profile, canWriteCustomers, canAccessSuppliers } = useAuth();
   const { info: toastInfo, success: toastSuccess, error: toastError } = useToast();
   const { confirm } = useConfirm();
   const listHref = kind === "customer" ? "/customers" : "/suppliers";
   const listLabel = kind === "customer" ? "العملاء" : "الموردون";
   const entityLabel = kind === "customer" ? "العميل" : "المورد";
+  const canManageLink = canWriteCustomers || canAccessSuppliers;
 
   const [party, setParty] = useState<(Customer | Supplier) | null>(null);
+  const [linkedParty, setLinkedParty] = useState<(Customer | Supplier) | null>(
+    null
+  );
   const [rows, setRows] = useState<PartyInvoiceRow[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -142,6 +160,14 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
   const [inlinePrintState, setInlinePrintState] =
     useState<InlineInvoicePrintState | null>(null);
   const [inlinePrintLoadingId, setInlinePrintLoadingId] = useState<string | null>(null);
+  const [showBalanceDetails, setShowBalanceDetails] = useState(false);
+  const [showLinkModal, setShowLinkModal] = useState(false);
+  const [linkSearch, setLinkSearch] = useState("");
+  const [linkCandidates, setLinkCandidates] = useState<
+    { id: string; name: string; phone?: string | null; balance: number }[]
+  >([]);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkLoading, setLinkLoading] = useState(false);
 
   function paymentHref(paymentId?: string) {
     const base =
@@ -166,20 +192,52 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           ? snap?.customers.find((c) => c.id === partyId)
           : snap?.suppliers.find((s) => s.id === partyId);
       if (fromSnap) {
+        const linkedId =
+          kind === "customer"
+            ? fromSnap.linked_supplier_id
+            : fromSnap.linked_customer_id;
+        const linkedFromSnap = linkedId
+          ? kind === "customer"
+            ? snap?.suppliers.find((s) => s.id === linkedId)
+            : snap?.customers.find((c) => c.id === linkedId)
+          : null;
         const partyData = {
           id: fromSnap.id,
           name: fromSnap.name,
           phone: fromSnap.phone || undefined,
           balance: fromSnap.balance,
+          linked_supplier_id:
+            kind === "customer" ? fromSnap.linked_supplier_id : undefined,
+          linked_customer_id:
+            kind === "supplier" ? fromSnap.linked_customer_id : undefined,
           created_at: "",
         } as Customer | Supplier;
-        const openingRow = buildPartyOpeningRow(partyData);
+        const linkedData = linkedFromSnap
+          ? ({
+              id: linkedFromSnap.id,
+              name: linkedFromSnap.name,
+              phone: linkedFromSnap.phone || undefined,
+              balance: linkedFromSnap.balance,
+              created_at: "",
+            } as Customer | Supplier)
+          : null;
+        const openingRows = [
+          buildPartyOpeningRow(partyData),
+          linkedData ? buildPartyOpeningRow(linkedData) : null,
+        ].filter(Boolean) as PartyInvoiceRow[];
         const recent = (snap?.recentInvoices || [])
-          .filter((inv) =>
-            kind === "customer"
-              ? inv.customer_id === partyId
-              : inv.supplier_id === partyId
-          )
+          .filter((inv) => {
+            if (kind === "customer") {
+              return (
+                inv.customer_id === partyId ||
+                (linkedId != null && inv.supplier_id === linkedId)
+              );
+            }
+            return (
+              inv.supplier_id === partyId ||
+              (linkedId != null && inv.customer_id === linkedId)
+            );
+          })
           .map(
             (inv) =>
               ({
@@ -194,8 +252,9 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
               }) as PartyInvoiceRow
           );
         setParty(partyData);
+        setLinkedParty(linkedData);
         setRows(
-          [...(openingRow ? [openingRow] : []), ...recent].sort(
+          [...openingRows, ...recent].sort(
             (a, b) =>
               new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
           )
@@ -206,6 +265,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
         return;
       }
       setParty(null);
+      setLinkedParty(null);
       setRows([]);
       setLoading(false);
       return;
@@ -229,6 +289,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
 
       if (!partyRes.data) {
         setParty(null);
+        setLinkedParty(null);
         setRows([]);
         setPartyPayments([]);
         setLoading(false);
@@ -236,17 +297,74 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
       }
 
       const partyData = partyRes.data as Customer | Supplier;
-      const openingRow = buildPartyOpeningRow(partyData);
-      const paymentRows = payments.map(partyPaymentToHistoryRow);
+      const linkedId =
+        kind === "customer"
+          ? (partyData as Customer).linked_supplier_id
+          : (partyData as Supplier).linked_customer_id;
+
+      let linkedData: Customer | Supplier | null = null;
+      let linkedHistory: PartyInvoiceRow[] = [];
+      let linkedPayments: PartyPaymentRow[] = [];
+
+      if (linkedId) {
+        const linkedTable = kind === "customer" ? "suppliers" : "customers";
+        const [linkedRes, linkedHist, linkedPays] = await Promise.all([
+          supabase.from(linkedTable).select("*").eq("id", linkedId).maybeSingle(),
+          kind === "customer"
+            ? fetchSupplierHistory(linkedId)
+            : fetchCustomerHistory(linkedId),
+          listPartyPayments(
+            supabase,
+            kind === "customer" ? "supplier" : "customer",
+            linkedId
+          ).catch(() => [] as PartyPaymentRow[]),
+        ]);
+        if (linkedRes.data) {
+          linkedData = linkedRes.data as Customer | Supplier;
+          linkedHistory = linkedHist;
+          linkedPayments = linkedPays;
+        }
+      }
+
+      const openingRows = [
+        buildPartyOpeningRow(partyData),
+        linkedData ? buildPartyOpeningRow(linkedData) : null,
+      ].filter(Boolean) as PartyInvoiceRow[];
+      const allPayments = [...payments, ...linkedPayments];
+      // Dedupe settlement pair rows that appear on both sides of combined view
+      const seenPaymentIds = new Set<string>();
+      const paymentRows = allPayments
+        .filter((p) => {
+          if (seenPaymentIds.has(p.id)) return false;
+          if (p.settlement_group_id) {
+            const twin = allPayments.find(
+              (x) =>
+                x.id !== p.id &&
+                x.settlement_group_id === p.settlement_group_id
+            );
+            if (twin) {
+              seenPaymentIds.add(p.id);
+              seenPaymentIds.add(twin.id);
+              // Keep one settlement row (customer side preferred)
+              return p.party_type === "customer" || !twin;
+            }
+          }
+          seenPaymentIds.add(p.id);
+          return true;
+        })
+        .map(partyPaymentToHistoryRow);
+
       const merged = [
-        ...(openingRow ? [openingRow] : []),
+        ...openingRows,
         ...history,
+        ...linkedHistory,
         ...paymentRows,
       ].sort(
         (a, b) =>
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
       setParty(partyData);
+      setLinkedParty(linkedData);
       setRows(merged);
       setPartyPayments(payments);
       if (settingsRes.data) setSettings(settingsRes.data);
@@ -264,8 +382,32 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           name: fromSnap.name,
           phone: fromSnap.phone || undefined,
           balance: fromSnap.balance,
+          linked_supplier_id:
+            kind === "customer" ? fromSnap.linked_supplier_id : undefined,
+          linked_customer_id:
+            kind === "supplier" ? fromSnap.linked_customer_id : undefined,
           created_at: "",
         } as Customer | Supplier);
+        const linkedId =
+          kind === "customer"
+            ? fromSnap.linked_supplier_id
+            : fromSnap.linked_customer_id;
+        const linkedFromSnap = linkedId
+          ? kind === "customer"
+            ? snap?.suppliers.find((s) => s.id === linkedId)
+            : snap?.customers.find((c) => c.id === linkedId)
+          : null;
+        setLinkedParty(
+          linkedFromSnap
+            ? ({
+                id: linkedFromSnap.id,
+                name: linkedFromSnap.name,
+                phone: linkedFromSnap.phone || undefined,
+                balance: linkedFromSnap.balance,
+                created_at: "",
+              } as Customer | Supplier)
+            : null
+        );
         if (snap?.settings) setSettings(snap.settings as unknown as Settings);
       }
       setLoading(false);
@@ -380,8 +522,9 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
     if (deletingPaymentId) return;
     if (
       !(await confirm({
-        message:
-          kind === "customer"
+        message: payment.is_settlement
+          ? `حذف مقاصة ${formatCurrency(payment.amount)}؟ سيرجع رصيد العميل والمورد كما كانا (بدون خزنة).`
+          : kind === "customer"
             ? `حذف تحصيل ${formatCurrency(payment.amount)}؟ سترجع الفواتير والرصيد والخزنة كما كانوا.`
             : `حذف سداد ${formatCurrency(payment.amount)}؟ سترجع الفواتير والرصيد والخزنة كما كانوا.`,
         tone: "danger",
@@ -394,13 +537,147 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
     setPaymentBusy(true);
     try {
       await deletePartyPayment(supabase, payment.id);
-      toastSuccess("تم حذف الدفعة وعكس التوزيع");
+      toastSuccess(
+        payment.is_settlement ? "تم حذف المقاصة" : "تم حذف الدفعة وعكس التوزيع"
+      );
       await refreshData();
     } catch (e) {
       toastError(e instanceof Error ? e.message : "تعذر حذف الدفعة");
     } finally {
       setDeletingPaymentId(null);
       setPaymentBusy(false);
+    }
+  }
+
+  async function loadLinkCandidates(term: string) {
+    setLinkLoading(true);
+    try {
+      const targetTable = kind === "customer" ? "suppliers" : "customers";
+      const linkCol =
+        kind === "customer" ? "linked_customer_id" : "linked_supplier_id";
+      let q = supabase
+        .from(targetTable)
+        .select("id, name, phone, balance")
+        .is(linkCol, null)
+        .eq("is_active", true)
+        .order("name")
+        .limit(40);
+      if (term.trim()) {
+        q = q.or(`name.ilike.%${term.trim()}%,phone.ilike.%${term.trim()}%`);
+      }
+      const { data, error } = await q;
+      if (error) throw error;
+      setLinkCandidates(
+        (data || []).map((r) => ({
+          id: r.id as string,
+          name: String(r.name || ""),
+          phone: (r.phone as string | null) || null,
+          balance: Number(r.balance) || 0,
+        }))
+      );
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "تعذر جلب القائمة");
+      setLinkCandidates([]);
+    } finally {
+      setLinkLoading(false);
+    }
+  }
+
+  async function handleLinkExisting(otherId: string) {
+    if (!party || linkBusy) return;
+    setLinkBusy(true);
+    try {
+      if (kind === "customer") {
+        await linkPartyAccounts(supabase, party.id, otherId);
+      } else {
+        await linkPartyAccounts(supabase, otherId, party.id);
+      }
+      toastSuccess("تم ربط الحسابين");
+      setShowLinkModal(false);
+      await refreshData();
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "تعذر الربط");
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
+  async function handleEnsureDualRole() {
+    if (!party || linkBusy) return;
+    setLinkBusy(true);
+    try {
+      if (kind === "customer") {
+        await ensureSupplierForCustomer(supabase, party.id);
+        toastSuccess("تم إنشاء مورد مربوط بنفس البيانات");
+      } else {
+        await ensureCustomerForSupplier(supabase, party.id);
+        toastSuccess("تم إنشاء عميل مربوط بنفس البيانات");
+      }
+      setShowLinkModal(false);
+      await refreshData();
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "تعذر التفعيل");
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
+  async function handleUnlink() {
+    if (!party || !linkedParty) return;
+    if (
+      !(await confirm({
+        message:
+          "فك الربط بين العميل والمورد؟ الأرصدة والحركات تبقى كما هي على كل حساب.",
+        tone: "danger",
+        confirmLabel: "فك الربط",
+      }))
+    )
+      return;
+    setLinkBusy(true);
+    try {
+      await unlinkPartyAccounts(supabase, {
+        customerId: kind === "customer" ? party.id : linkedParty.id,
+        supplierId: kind === "supplier" ? party.id : linkedParty.id,
+      });
+      toastSuccess("تم فك الربط");
+      await refreshData();
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "تعذر فك الربط");
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
+  async function handleSettleNetting() {
+    if (!party || !linkedParty) return;
+    const customerBalance =
+      kind === "customer" ? party.balance : linkedParty.balance;
+    const supplierBalance =
+      kind === "supplier" ? party.balance : linkedParty.balance;
+    const offset = computeNettingOffset(customerBalance, supplierBalance);
+    if (offset <= 0) {
+      toastInfo("لا يوجد مبلغ قابل للمقاصة");
+      return;
+    }
+    if (
+      !(await confirm({
+        message: `مقاصة ${formatCurrency(offset)} بين عليه/علينا؟ الرصيد الصافي لن يتغير، ويُصفَّى الدين المزدوج بدون حركة خزنة.`,
+        confirmLabel: "تنفيذ المقاصة",
+      }))
+    )
+      return;
+    setLinkBusy(true);
+    try {
+      const result = await settlePartyNetting(supabase, {
+        customerId: kind === "customer" ? party.id : linkedParty.id,
+        supplierId: kind === "supplier" ? party.id : linkedParty.id,
+      });
+      toastSuccess(`تمت المقاصة بمبلغ ${formatCurrency(result.offset)}`);
+      await refreshData();
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "تعذر إجراء المقاصة");
+    } finally {
+      setLinkBusy(false);
     }
   }
 
@@ -474,7 +751,8 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
       (r) =>
         r.type !== "opening" &&
         r.type !== "collection" &&
-        r.type !== "disbursement"
+        r.type !== "disbursement" &&
+        r.type !== "settlement"
     )
     .reduce((s, r) => s + Number(r.total), 0);
   const totalPaid = filtered
@@ -482,19 +760,40 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
       (r) =>
         r.type !== "opening" &&
         r.type !== "collection" &&
-        r.type !== "disbursement"
+        r.type !== "disbursement" &&
+        r.type !== "settlement"
     )
     .reduce((s, r) => s + Number(r.paid_amount), 0);
   const unpaidInvoicesCount = useMemo(() => {
-    const invoiceType = kind === "customer" ? "sale" : "purchase";
     return rows.filter(
       (r) =>
-        r.type === invoiceType &&
+        (r.type === "sale" || r.type === "purchase") &&
         !r.isOpening &&
         !r.isPartyPayment &&
         Number(r.paid_amount) + 0.001 < Number(r.total)
     ).length;
-  }, [rows, kind]);
+  }, [rows]);
+
+  const customerBalanceForNet =
+    kind === "customer"
+      ? party?.balance ?? 0
+      : linkedParty?.balance ?? 0;
+  const supplierBalanceForNet =
+    kind === "supplier"
+      ? party?.balance ?? 0
+      : linkedParty?.balance ?? 0;
+  const isDualLinked = Boolean(linkedParty);
+  const netBalance = isDualLinked
+    ? computeNetBalance(customerBalanceForNet, supplierBalanceForNet)
+    : null;
+  const nettingOffset = isDualLinked
+    ? computeNettingOffset(customerBalanceForNet, supplierBalanceForNet)
+    : 0;
+  const linkedHref = linkedParty
+    ? kind === "customer"
+      ? `/suppliers/${linkedParty.id}`
+      : `/customers/${linkedParty.id}`
+    : null;
 
   function openOperation(row: PartyInvoiceRow) {
     if (row.isOpening || row.type === "opening") {
@@ -504,6 +803,10 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
       return;
     }
     if (row.isPartyPayment && row.partyPaymentId) {
+      if (row.type === "settlement") {
+        toastInfo("هذه حركة مقاصة — يمكن حذفها من جدول التحصيلات/السدادات إن لزم.");
+        return;
+      }
       router.push(paymentHref(row.partyPaymentId));
       return;
     }
@@ -516,8 +819,8 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
     });
   }
 
-  function balanceLabel(balance: number) {
-    if (kind === "customer") {
+  function balanceLabel(balance: number, forKind: PartyKind = kind) {
+    if (forKind === "customer") {
       if (balance > 0) return `${formatCurrency(balance)} (عليه)`;
       if (balance < 0) return `${formatCurrency(Math.abs(balance))} (له)`;
       return formatCurrency(0);
@@ -530,6 +833,14 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
   function balanceTone(balance: number): "danger" | "success" | "default" {
     if (balance > 0) return "danger";
     if (balance < 0) return "success";
+    return "default";
+  }
+
+  function netTone(
+    side: "us" | "them" | "zero" | undefined
+  ): "danger" | "success" | "default" {
+    if (side === "them") return "success";
+    if (side === "us") return "danger";
     return "default";
   }
 
@@ -566,13 +877,25 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
   }
 
   const Icon = kind === "customer" ? User : Users;
-  const typeOptions =
-    kind === "customer"
+  const typeOptions = isDualLinked
+    ? ([
+        ["", "كل الأنواع"],
+        ["sale", "بيع"],
+        ["purchase", "شراء"],
+        ["sale_return", "مرتجع بيع"],
+        ["purchase_return", "مرتجع شراء"],
+        ["collection", "تحصيل"],
+        ["disbursement", "سداد"],
+        ["settlement", "مقاصة"],
+        ["opening", "رصيد افتتاحي"],
+      ] as const)
+    : kind === "customer"
       ? ([
           ["", "كل الأنواع"],
           ["sale", "بيع"],
           ["sale_return", "مرتجع بيع"],
           ["collection", "تحصيل"],
+          ["settlement", "مقاصة"],
           ["opening", "رصيد افتتاحي"],
         ] as const)
       : ([
@@ -580,6 +903,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           ["purchase", "شراء"],
           ["purchase_return", "مرتجع شراء"],
           ["disbursement", "سداد"],
+          ["settlement", "مقاصة"],
           ["opening", "رصيد افتتاحي"],
         ] as const);
 
@@ -600,7 +924,14 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
               <Icon className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-[#172033]">{party.name}</h1>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-2xl font-bold text-[#172033]">{party.name}</h1>
+                {isDualLinked ? (
+                  <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-800">
+                    عميل+مورد
+                  </span>
+                ) : null}
+              </div>
               <p className="flex flex-wrap items-center gap-1.5 text-sm text-[#687386]">
                 {party.phone ? (
                   <>
@@ -620,6 +951,15 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
                 )}
                 {party.address ? ` · ${party.address}` : ""}
               </p>
+              {linkedParty && linkedHref ? (
+                <Link
+                  href={linkedHref}
+                  className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-[#1473e6] hover:underline"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  الحساب المربوط: {linkedParty.name}
+                </Link>
+              ) : null}
             </div>
           </div>
         </div>
@@ -644,27 +984,82 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           >
             كشف حساب
           </button>
+          {canManageLink && !isDualLinked ? (
+            <button
+              type="button"
+              disabled={linkBusy}
+              onClick={() => {
+                setShowLinkModal(true);
+                setLinkSearch("");
+                void loadLinkCandidates("");
+              }}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-bold text-violet-800 hover:bg-violet-100 disabled:opacity-50"
+            >
+              <Link2 className="h-4 w-4" />
+              {kind === "customer" ? "ربط كمورد" : "ربط كعميل"}
+            </button>
+          ) : null}
+          {canManageLink && isDualLinked ? (
+            <>
+              {nettingOffset > 0 ? (
+                <button
+                  type="button"
+                  disabled={linkBusy}
+                  onClick={() => void handleSettleNetting()}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm font-bold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                >
+                  <Scale className="h-4 w-4" />
+                  مقاصة {formatCurrency(nettingOffset)}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                disabled={linkBusy}
+                onClick={() => void handleUnlink()}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                <Link2Off className="h-4 w-4" />
+                فك الربط
+              </button>
+            </>
+          ) : null}
         </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <DetailCard
-          label="الرصيد الحالي"
-          value={balanceLabel(party.balance)}
-          tone={balanceTone(party.balance)}
-          highlight={party.balance !== 0}
-          badge={
-            party.balance > 0
-              ? kind === "customer"
-                ? "غير مسدد"
-                : "مستحق علينا"
-              : party.balance < 0
+        {isDualLinked && netBalance ? (
+          <DetailCard
+            label="الرصيد الصافي"
+            value={netBalance.label}
+            tone={netTone(netBalance.side)}
+            highlight={netBalance.side !== "zero"}
+            badge={
+              netBalance.side === "them"
+                ? "مستحق لنا"
+                : netBalance.side === "us"
+                  ? "مستحق علينا"
+                  : "متصفّر"
+            }
+          />
+        ) : (
+          <DetailCard
+            label="الرصيد الحالي"
+            value={balanceLabel(party.balance)}
+            tone={balanceTone(party.balance)}
+            highlight={party.balance !== 0}
+            badge={
+              party.balance > 0
                 ? kind === "customer"
-                  ? "رصيد دائن"
-                  : "رصيد لنا"
-                : undefined
-          }
-        />
+                  ? "غير مسدد"
+                  : "مستحق علينا"
+                : party.balance < 0
+                  ? kind === "customer"
+                    ? "رصيد دائن"
+                    : "رصيد لنا"
+                  : undefined
+            }
+          />
+        )}
         <DetailCard
           label="رصيد افتتاحي"
           value={balanceLabel(party.opening_balance ?? 0)}
@@ -681,6 +1076,45 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           value={String(filtered.length)}
         />
       </div>
+
+      {isDualLinked && linkedParty ? (
+        <div className="rounded-xl border border-violet-100 bg-violet-50/60 px-4 py-3">
+          <button
+            type="button"
+            onClick={() => setShowBalanceDetails((v) => !v)}
+            className="flex w-full items-center justify-between text-sm font-bold text-violet-900"
+          >
+            <span>تفاصيل الأرصدة (مبيعات / مشتريات)</span>
+            {showBalanceDetails ? (
+              <ChevronUp className="h-4 w-4" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+          </button>
+          {showBalanceDetails ? (
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 text-sm">
+              <div className="rounded-lg bg-white/80 px-3 py-2 border border-violet-100">
+                <p className="text-xs text-[#687386]">مبيعات (عميل)</p>
+                <p className="font-bold text-[#172033]">
+                  {balanceLabel(
+                    kind === "customer" ? party.balance : linkedParty.balance,
+                    "customer"
+                  )}
+                </p>
+              </div>
+              <div className="rounded-lg bg-white/80 px-3 py-2 border border-violet-100">
+                <p className="text-xs text-[#687386]">مشتريات (مورد)</p>
+                <p className="font-bold text-[#172033]">
+                  {balanceLabel(
+                    kind === "supplier" ? party.balance : linkedParty.balance,
+                    "supplier"
+                  )}
+                </p>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div
         className={`relative overflow-hidden rounded-xl border border-[#e1e6ee] bg-white shadow-sm ${
@@ -1087,8 +1521,12 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
 
       {showMovementsPrint && (
         <PrintReportPreview
-          title={`حركة ${entityLabel} — ${party.name}`}
-          subtitle={`الرصيد الحالي: ${balanceLabel(party.balance)} · افتتاحي: ${balanceLabel(party.opening_balance ?? 0)}`}
+          title={`حركة ${isDualLinked ? "الحساب الموحّد" : entityLabel} — ${party.name}`}
+          subtitle={
+            netBalance
+              ? `الرصيد الصافي: ${netBalance.label} · افتتاحي: ${balanceLabel(party.opening_balance ?? 0)}`
+              : `الرصيد الحالي: ${balanceLabel(party.balance)} · افتتاحي: ${balanceLabel(party.opening_balance ?? 0)}`
+          }
           rows={filtered}
           columns={partyHistoryColumns}
           settings={settings}
@@ -1097,17 +1535,22 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
             { label: "إجمالي الفواتير", value: formatCurrency(totalAmount) },
             { label: "المدفوع على الفواتير", value: formatCurrency(totalPaid) },
             {
-              label: kind === "customer" ? "تحصيلات مجمّعة" : "سدادات مجمّعة",
+              label: "تحصيلات/سدادات/مقاصة",
               value: formatCurrency(
                 filtered
                   .filter(
                     (r) =>
-                      r.type === "collection" || r.type === "disbursement"
+                      r.type === "collection" ||
+                      r.type === "disbursement" ||
+                      r.type === "settlement"
                   )
                   .reduce((s, r) => s + Number(r.paid_amount), 0)
               ),
             },
-            { label: "الرصيد الحالي", value: balanceLabel(party.balance) },
+            {
+              label: netBalance ? "الرصيد الصافي" : "الرصيد الحالي",
+              value: netBalance ? netBalance.label : balanceLabel(party.balance),
+            },
           ]}
           onClose={() => setShowMovementsPrint(false)}
         />
@@ -1152,8 +1595,86 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           party={party}
           settings={settings}
           onClose={() => setShowStatement(false)}
+          linkedParty={
+            linkedParty
+              ? {
+                  id: linkedParty.id,
+                  kind: kind === "customer" ? "supplier" : "customer",
+                  name: linkedParty.name,
+                  balance: linkedParty.balance,
+                }
+              : null
+          }
+          netBalanceLabel={netBalance?.label}
         />
       )}
+
+      <Modal
+        open={showLinkModal}
+        onClose={() => !linkBusy && setShowLinkModal(false)}
+        title={kind === "customer" ? "ربط كمورد" : "ربط كعميل"}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-[#687386]">
+            اربط حساباً موجوداً، أو أنشئ الطرف الآخر بنفس الاسم والهاتف لتجميع
+            الرصيد في رقم صافي واحد (ليّا / عليّا).
+          </p>
+          <button
+            type="button"
+            disabled={linkBusy}
+            onClick={() => void handleEnsureDualRole()}
+            className="w-full rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-violet-700 disabled:opacity-50"
+          >
+            {kind === "customer"
+              ? "إنشاء مورد جديد وربطه"
+              : "إنشاء عميل جديد وربطه"}
+          </button>
+          <div className="border-t border-[#e1e6ee] pt-3">
+            <label className="mb-1 block text-xs font-semibold text-[#687386]">
+              أو اختر من القائمة
+            </label>
+            <input
+              type="search"
+              value={linkSearch}
+              onChange={(e) => {
+                setLinkSearch(e.target.value);
+                void loadLinkCandidates(e.target.value);
+              }}
+              placeholder="بحث بالاسم أو الهاتف..."
+              className="w-full rounded-lg border border-[#e1e6ee] px-3 py-2 text-sm"
+            />
+            <div className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-[#e1e6ee]">
+              {linkLoading ? (
+                <p className="p-3 text-center text-xs text-[#687386]">جاري التحميل...</p>
+              ) : linkCandidates.length === 0 ? (
+                <p className="p-3 text-center text-xs text-[#687386]">
+                  لا توجد نتائج غير مربوطة
+                </p>
+              ) : (
+                linkCandidates.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    disabled={linkBusy}
+                    onClick={() => void handleLinkExisting(c.id)}
+                    className="flex w-full items-center justify-between border-b border-[#eef1f6] px-3 py-2 text-right text-sm hover:bg-[#f8faff] disabled:opacity-50 last:border-0"
+                  >
+                    <span>
+                      <span className="font-bold text-[#172033]">{c.name}</span>
+                      {c.phone ? (
+                        <span className="mr-2 text-xs text-[#687386]">{c.phone}</span>
+                      ) : null}
+                    </span>
+                    <span className="text-xs text-[#687386]">
+                      {formatCurrency(c.balance)}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </Modal>
 
       {inlinePrintState && (
         <DocumentPrintPreview

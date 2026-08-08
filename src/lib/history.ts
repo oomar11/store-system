@@ -44,6 +44,7 @@ const typeLabels: Record<string, string> = {
   opening: "رصيد افتتاحي",
   collection: "تحصيل",
   disbursement: "سداد",
+  settlement: "مقاصة",
 };
 
 export function invoiceTypeLabel(type: string) {
@@ -210,9 +211,11 @@ export function partyPaymentToHistoryRow(payment: {
   created_at: string;
   notes?: string | null;
   safe_name?: string;
+  is_settlement?: boolean | null;
   allocations?: { invoice_number?: string; amount: number }[];
 }): PartyInvoiceRow {
   const amount = Number(payment.amount) || 0;
+  const isSettlement = Boolean(payment.is_settlement);
   const allocNote = (payment.allocations || [])
     .map(
       (a) =>
@@ -223,16 +226,24 @@ export function partyPaymentToHistoryRow(payment: {
     .filter(Boolean)
     .join(" — ");
 
+  const shortId = payment.id.replace(/-/g, "").slice(0, 8).toUpperCase();
+
   return {
     id: `party-pay-${payment.id}`,
-    invoice_number: partyPaymentDocNumber(payment.id, payment.party_type),
-    type: payment.party_type === "customer" ? "collection" : "disbursement",
+    invoice_number: isSettlement
+      ? `مقاصة-${shortId}`
+      : partyPaymentDocNumber(payment.id, payment.party_type),
+    type: isSettlement
+      ? "settlement"
+      : payment.party_type === "customer"
+        ? "collection"
+        : "disbursement",
     total: amount,
     paid_amount: amount,
     created_at: payment.created_at,
     status: "completed",
     notes: notes || null,
-    payment_method: payment.safe_name || null,
+    payment_method: isSettlement ? "مقاصة" : payment.safe_name || null,
     isPartyPayment: true,
     partyPaymentId: payment.id,
   };

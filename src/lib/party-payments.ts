@@ -3,6 +3,7 @@ import {
   adjustCustomerBalance,
   adjustSupplierBalance,
 } from "@/lib/party-balance";
+import { deletePartySettlement } from "@/lib/party-link";
 import { applySafeMovement } from "@/lib/safe-transactions";
 
 export type PartyPaymentKind = "customer" | "supplier";
@@ -51,10 +52,12 @@ export type PartyPaymentRow = {
   party_type: PartyPaymentKind;
   party_id: string;
   amount: number;
-  safe_id: string;
+  safe_id: string | null;
   notes: string | null;
   created_by: string | null;
   created_at: string;
+  is_settlement?: boolean;
+  settlement_group_id?: string | null;
   safe_name?: string;
   created_by_name?: string | null;
   allocations?: PartyPaymentAllocationDetail[];
@@ -321,6 +324,11 @@ export async function deletePartyPayment(
   if (payErr) throw new Error(payErr.message);
   if (!payment) throw new Error("الدفعة غير موجودة");
 
+  if (payment.is_settlement) {
+    await deletePartySettlement(supabase, paymentId);
+    return;
+  }
+
   const { data: allocations, error: allocErr } = await supabase
     .from("party_payment_allocations")
     .select("id, invoice_id, amount")
@@ -347,16 +355,18 @@ export async function deletePartyPayment(
   const amount = money(payment.amount);
   const isCustomer = payment.party_type === "customer";
 
-  await applySafeMovement(supabase, {
-    safeId: payment.safe_id,
-    type: isCustomer ? "withdrawal" : "deposit",
-    amount,
-    description: isCustomer
-      ? "عكس تحصيل دفعة مجمّعة"
-      : "عكس سداد دفعة مجمّعة",
-    referenceType: "party_payment_reversal",
-    referenceId: paymentId,
-  });
+  if (payment.safe_id) {
+    await applySafeMovement(supabase, {
+      safeId: payment.safe_id,
+      type: isCustomer ? "withdrawal" : "deposit",
+      amount,
+      description: isCustomer
+        ? "عكس تحصيل دفعة مجمّعة"
+        : "عكس سداد دفعة مجمّعة",
+      referenceType: "party_payment_reversal",
+      referenceId: paymentId,
+    });
+  }
 
   if (isCustomer) {
     await adjustCustomerBalance(supabase, payment.party_id, amount);
@@ -587,7 +597,7 @@ function mapAllocations(allocs: AllocEmbed[]): PartyPaymentAllocationDetail[] {
 }
 
 const PAYMENT_DETAIL_SELECT =
-  "id, party_type, party_id, amount, safe_id, notes, created_by, created_at, safes(name), party_payment_allocations(id, invoice_id, amount, invoices(invoice_number, type, total, paid_amount, created_at, status))";
+  "id, party_type, party_id, amount, safe_id, notes, created_by, created_at, is_settlement, settlement_group_id, safes(name), party_payment_allocations(id, invoice_id, amount, invoices(invoice_number, type, total, paid_amount, created_at, status))";
 
 export async function getPartyPayment(
   supabase: SupabaseClient,
@@ -620,10 +630,12 @@ export async function getPartyPayment(
     party_type: data.party_type as PartyPaymentKind,
     party_id: data.party_id as string,
     amount: money(data.amount),
-    safe_id: data.safe_id as string,
+    safe_id: (data.safe_id as string | null) || null,
     notes: (data.notes as string | null) || null,
     created_by: (data.created_by as string | null) || null,
     created_at: data.created_at as string,
+    is_settlement: Boolean(data.is_settlement),
+    settlement_group_id: (data.settlement_group_id as string | null) || null,
     safe_name: safe?.name,
     created_by_name: createdByName,
     allocations: mapAllocations(
@@ -673,10 +685,12 @@ export async function listPartyPayments(
       party_type: row.party_type as PartyPaymentKind,
       party_id: row.party_id as string,
       amount: money(row.amount),
-      safe_id: row.safe_id as string,
+      safe_id: (row.safe_id as string | null) || null,
       notes: (row.notes as string | null) || null,
       created_by: (row.created_by as string | null) || null,
       created_at: row.created_at as string,
+      is_settlement: Boolean(row.is_settlement),
+      settlement_group_id: (row.settlement_group_id as string | null) || null,
       safe_name: safe?.name,
       created_by_name: row.created_by
         ? nameById.get(row.created_by as string) || null

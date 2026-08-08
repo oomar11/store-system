@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase";
 import { formatCurrency, formatDateShort, smartSearchMatch } from "@/lib/utils";
+import { computeNetBalance } from "@/lib/party-link";
 import { listPriceTiers } from "@/lib/price-tiers";
 import { useSort } from "@/hooks/useSort";
 import { useUrlSearchTerm } from "@/hooks/useUrlSearchTerm";
@@ -39,6 +40,9 @@ export default function CustomersPage() {
   const { confirm } = useConfirm();
   const { error: toastError, info: toastInfo, success: toastSuccess } = useToast();
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [linkedSupplierBalances, setLinkedSupplierBalances] = useState<
+    Record<string, number>
+  >({});
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
@@ -64,6 +68,7 @@ export default function CustomersPage() {
 
     await readLocalThenNetwork<{
       customers: Customer[];
+      linkedSupplierBalances: Record<string, number>;
       settings: Settings | null;
     }>({
       offline,
@@ -71,6 +76,10 @@ export default function CustomersPage() {
       local: async () => {
         const snap = await getSnapshot();
         if (!snap?.customers?.length && !snap?.settings) return null;
+        const supplierBal: Record<string, number> = {};
+        for (const s of snap.suppliers || []) {
+          supplierBal[s.id] = Number(s.balance) || 0;
+        }
         return {
           customers: (snap.customers || []).map(
             (c) =>
@@ -80,33 +89,42 @@ export default function CustomersPage() {
                 phone: c.phone || undefined,
                 balance: c.balance,
                 price_tier_id: c.price_tier_id ?? null,
+                linked_supplier_id: c.linked_supplier_id ?? null,
                 is_active: c.is_active !== false,
                 last_activity_at: c.last_activity_at ?? null,
                 created_at: "",
               }) as Customer
           ),
+          linkedSupplierBalances: supplierBal,
           settings: (snap.settings as Settings | null) ?? null,
         };
       },
       network: async () => {
-        const [custRes, settingsRes] = await withTimeout(
+        const [custRes, settingsRes, suppRes] = await withTimeout(
           Promise.all([
             supabase
               .from("customers")
               .select("*")
               .order("created_at", { ascending: false }),
             supabase.from("settings").select("*").limit(1).maybeSingle(),
+            supabase.from("suppliers").select("id, balance"),
           ]),
           5000
         );
         if (custRes.error) throw custRes.error;
+        const supplierBal: Record<string, number> = {};
+        for (const s of suppRes.data || []) {
+          supplierBal[s.id as string] = Number(s.balance) || 0;
+        }
         return {
           customers: (custRes.data as Customer[]) || [],
+          linkedSupplierBalances: supplierBal,
           settings: (settingsRes.data as Settings | null) ?? null,
         };
       },
       apply: (data) => {
         setCustomers(data.customers);
+        setLinkedSupplierBalances(data.linkedSupplierBalances || {});
         if (data.settings) setSettings(data.settings);
       },
     });
@@ -523,6 +541,11 @@ export default function CustomersPage() {
                       >
                         {customer.name}
                       </Link>
+                      {customer.linked_supplier_id ? (
+                        <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-800">
+                          عميل+مورد
+                        </span>
+                      ) : null}
                       {!active && (
                         <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[10px] font-bold text-gray-600">
                           موقوف
@@ -537,19 +560,42 @@ export default function CustomersPage() {
                     {customer.address || "-"}
                   </td>
                   <td className="px-4 py-3">
-                    <span
-                      className={`font-medium ${
-                        customer.balance > 0
-                          ? "text-red-600"
-                          : customer.balance < 0
-                          ? "text-green-600"
-                          : "text-gray-600"
-                      }`}
-                    >
-                      {formatCurrency(Math.abs(customer.balance))}
-                      {customer.balance > 0 && " (عليه)"}
-                      {customer.balance < 0 && " (له)"}
-                    </span>
+                    {(() => {
+                      if (customer.linked_supplier_id) {
+                        const net = computeNetBalance(
+                          customer.balance,
+                          linkedSupplierBalances[customer.linked_supplier_id] ?? 0
+                        );
+                        return (
+                          <span
+                            className={`font-medium ${
+                              net.side === "us"
+                                ? "text-red-600"
+                                : net.side === "them"
+                                  ? "text-green-600"
+                                  : "text-gray-600"
+                            }`}
+                          >
+                            {net.label}
+                          </span>
+                        );
+                      }
+                      return (
+                        <span
+                          className={`font-medium ${
+                            customer.balance > 0
+                              ? "text-red-600"
+                              : customer.balance < 0
+                                ? "text-green-600"
+                                : "text-gray-600"
+                          }`}
+                        >
+                          {formatCurrency(Math.abs(customer.balance))}
+                          {customer.balance > 0 && " (عليه)"}
+                          {customer.balance < 0 && " (له)"}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-4 py-3 text-gray-600">
                     {customer.last_activity_at

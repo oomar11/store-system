@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";
 import { canAccess, profileSubject } from "@/lib/permissions";
 import { formatCurrency, smartSearchMatch } from "@/lib/utils";
+import { computeNetBalance } from "@/lib/party-link";
 import {
   getSnapshot,
   readLocalThenNetwork,
@@ -70,6 +71,7 @@ export default function MobilePartiesPage() {
                       name: c.name,
                       phone: c.phone || undefined,
                       balance: c.balance,
+                      linked_supplier_id: c.linked_supplier_id ?? null,
                       created_at: "",
                     }) as Customer
                 )
@@ -84,6 +86,7 @@ export default function MobilePartiesPage() {
                       name: s.name,
                       phone: s.phone || undefined,
                       balance: s.balance,
+                      linked_customer_id: s.linked_customer_id ?? null,
                       created_at: "",
                     }) as Supplier
                 )
@@ -142,21 +145,83 @@ export default function MobilePartiesPage() {
     };
   }, [authLoading, load]);
 
+  const supplierBalById = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of suppliers) m.set(s.id, Number(s.balance) || 0);
+    return m;
+  }, [suppliers]);
+
+  const customerBalById = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const c of customers) m.set(c.id, Number(c.balance) || 0);
+    return m;
+  }, [customers]);
+
   const list = useMemo(() => {
     const raw =
       kind === "customers"
-        ? customers.map((c) => ({ ...c, _kind: "customer" as const }))
-        : suppliers.map((s) => ({ ...s, _kind: "supplier" as const }));
+        ? customers.map((c) => {
+            const linked = c.linked_supplier_id
+              ? supplierBalById.get(c.linked_supplier_id)
+              : undefined;
+            const net =
+              linked != null
+                ? computeNetBalance(c.balance, linked)
+                : null;
+            return {
+              ...c,
+              _kind: "customer" as const,
+              _displayBalance: net ? net.net : Number(c.balance),
+              _displayLabel: net
+                ? net.shortLabel
+                : Number(c.balance) > 0
+                  ? "عليه"
+                  : Number(c.balance) < 0
+                    ? "له"
+                    : "",
+              _dual: Boolean(c.linked_supplier_id),
+            };
+          })
+        : suppliers.map((s) => {
+            const linked = s.linked_customer_id
+              ? customerBalById.get(s.linked_customer_id)
+              : undefined;
+            const net =
+              linked != null
+                ? computeNetBalance(linked, s.balance)
+                : null;
+            return {
+              ...s,
+              _kind: "supplier" as const,
+              _displayBalance: net ? net.net : Number(s.balance),
+              _displayLabel: net
+                ? net.shortLabel
+                : Number(s.balance) > 0
+                  ? "علينا"
+                  : Number(s.balance) < 0
+                    ? "لنا"
+                    : "",
+              _dual: Boolean(s.linked_customer_id),
+            };
+          });
 
     return raw.filter((p) => {
       if (q && !smartSearchMatch(q, [p.name, p.phone || ""])) return false;
-      const bal = Number(p.balance);
+      const bal = Number(p._displayBalance);
       if (filter === "debt") return bal > 0.001;
       if (filter === "credit") return bal < -0.001;
       if (filter === "zero") return Math.abs(bal) <= 0.001;
       return true;
     });
-  }, [customers, filter, kind, q, suppliers]);
+  }, [
+    customerBalById,
+    customers,
+    filter,
+    kind,
+    q,
+    supplierBalById,
+    suppliers,
+  ]);
 
   const receivables = customers
     .filter((c) => Number(c.balance) > 0)
@@ -244,14 +309,22 @@ export default function MobilePartiesPage() {
               list.map((p) => (
                 <MobileListRow
                   key={p.id}
-                  title={p.name}
-                  subtitle={p.phone || "بدون هاتف"}
-                  amount={Number(p.balance)}
+                  title={p._dual ? `${p.name} · عميل+مورد` : p.name}
+                  subtitle={
+                    p._displayLabel
+                      ? `${p.phone || "بدون هاتف"} · ${p._displayLabel}`
+                      : p.phone || "بدون هاتف"
+                  }
+                  amount={Math.abs(Number(p._displayBalance))}
                   amountTone={
-                    Number(p.balance) > 0
-                      ? "negative"
-                      : Number(p.balance) < 0
+                    Number(p._displayBalance) > 0
+                      ? p._dual
                         ? "positive"
+                        : "negative"
+                      : Number(p._displayBalance) < 0
+                        ? p._dual
+                          ? "negative"
+                          : "positive"
                         : "muted"
                   }
                   onClick={() =>

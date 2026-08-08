@@ -528,6 +528,7 @@ export const statementInvoiceColumns: ReportColumn[] = [
       if (t === "opening") return "رصيد افتتاحي";
       if (t === "collection") return "تحصيل";
       if (t === "disbursement") return "سداد";
+      if (t === "settlement") return "مقاصة";
       return t || "—";
     },
   },
@@ -536,8 +537,8 @@ export const statementInvoiceColumns: ReportColumn[] = [
     label: "الدفع",
     getValue: (r) => {
       const t = String(r.type ?? "");
-      if (t === "collection" || t === "disbursement") {
-        return String(r.payment_method || "خزنة");
+      if (t === "collection" || t === "disbursement" || t === "settlement") {
+        return String(r.payment_method || (t === "settlement" ? "مقاصة" : "خزنة"));
       }
       return paymentLabel(String(r.payment_method ?? ""));
     },
@@ -547,7 +548,8 @@ export const statementInvoiceColumns: ReportColumn[] = [
     label: "الإجمالي",
     getValue: (r) => {
       const t = String(r.type ?? "");
-      if (t === "collection" || t === "disbursement") return "—";
+      if (t === "collection" || t === "disbursement" || t === "settlement")
+        return "—";
       return formatCurrency(Number(r.total ?? 0));
     },
   },
@@ -561,7 +563,12 @@ export const statementInvoiceColumns: ReportColumn[] = [
     label: "المتبقي",
     getValue: (r) => {
       const t = String(r.type ?? "");
-      if (t === "collection" || t === "disbursement" || t === "opening") {
+      if (
+        t === "collection" ||
+        t === "disbursement" ||
+        t === "settlement" ||
+        t === "opening"
+      ) {
         return "—";
       }
       return formatCurrency(Number(r.total ?? 0) - Number(r.paid_amount ?? 0));
@@ -592,6 +599,7 @@ export const partyHistoryColumns: ReportColumn[] = [
       if (t === "opening") return "رصيد افتتاحي";
       if (t === "collection") return "تحصيل";
       if (t === "disbursement") return "سداد";
+      if (t === "settlement") return "مقاصة";
       return t || "—";
     },
   },
@@ -600,7 +608,8 @@ export const partyHistoryColumns: ReportColumn[] = [
     label: "الإجمالي",
     getValue: (r) => {
       const t = String(r.type ?? "");
-      if (t === "collection" || t === "disbursement") return "—";
+      if (t === "collection" || t === "disbursement" || t === "settlement")
+        return "—";
       return formatCurrency(Number(r.total ?? 0));
     },
   },
@@ -616,7 +625,8 @@ export const partyHistoryColumns: ReportColumn[] = [
       if (
         r.type === "opening" ||
         r.type === "collection" ||
-        r.type === "disbursement"
+        r.type === "disbursement" ||
+        r.type === "settlement"
       ) {
         return "—";
       }

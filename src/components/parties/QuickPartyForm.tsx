@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase";
 import { Modal } from "@/components/ui/Modal";
+import { linkPartyAccounts } from "@/lib/party-link";
 import type { Customer, Supplier } from "@/types";
 
 type PartyKind = "customer" | "supplier";
@@ -23,6 +24,7 @@ export function QuickPartyForm({
   const isCustomer = kind === "customer";
   const [name, setName] = useState(initialName.trim());
   const [phone, setPhone] = useState("");
+  const [alsoDual, setAlsoDual] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const nameRef = useRef<HTMLInputElement>(null);
@@ -64,8 +66,44 @@ export function QuickPartyForm({
       return;
     }
 
+    let party = data as Customer | Supplier;
+
+    if (alsoDual) {
+      const otherTable = isCustomer ? "suppliers" : "customers";
+      const { data: other, error: otherErr } = await supabase
+        .from(otherTable)
+        .insert(payload)
+        .select("*")
+        .single();
+      if (otherErr || !other) {
+        setError(otherErr?.message || "تم الحفظ لكن تعذر إنشاء الطرف المربوط");
+        setLoading(false);
+        onCreated(party);
+        return;
+      }
+      try {
+        const customerId = isCustomer ? party.id : (other as Customer).id;
+        const supplierId = isCustomer ? (other as Supplier).id : party.id;
+        await linkPartyAccounts(supabase, customerId, supplierId);
+        if (isCustomer) {
+          party = { ...(party as Customer), linked_supplier_id: supplierId };
+        } else {
+          party = { ...(party as Supplier), linked_customer_id: customerId };
+        }
+      } catch (linkErr) {
+        setError(
+          linkErr instanceof Error
+            ? linkErr.message
+            : "تم الإنشاء لكن تعذر الربط"
+        );
+        setLoading(false);
+        onCreated(party);
+        return;
+      }
+    }
+
     setLoading(false);
-    onCreated(data as Customer | Supplier);
+    onCreated(party);
   }
 
   return (
@@ -102,6 +140,21 @@ export function QuickPartyForm({
           />
         </div>
 
+        <label className="flex items-start gap-2 rounded-lg border border-violet-100 bg-violet-50/70 px-3 py-2 text-sm text-violet-900">
+          <input
+            type="checkbox"
+            checked={alsoDual}
+            onChange={(e) => setAlsoDual(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            <span className="font-bold">عميل ومورد معاً</span>
+            <span className="mt-0.5 block text-xs text-violet-800/80">
+              ينشئ الحسابين ويربطهما لرصيد صافي واحد (ليّا / عليّا)
+            </span>
+          </span>
+        </label>
+
         {error && (
           <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
             {error}
@@ -119,7 +172,8 @@ export function QuickPartyForm({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            disabled={loading}
+            className="rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
           >
             إلغاء
           </button>

@@ -119,6 +119,7 @@ export async function rebuildCompatSnapshot(): Promise<SnapshotBundle> {
       kind: "customer" as const,
       price_tier_id: priceTierId,
       price_tier: priceTier,
+      linked_supplier_id: (c.linked_supplier_id as string | null) ?? null,
       is_active: c.is_active !== false,
       last_activity_at: (c.last_activity_at as string | null) ?? null,
     };
@@ -130,6 +131,7 @@ export async function rebuildCompatSnapshot(): Promise<SnapshotBundle> {
     phone: (s.phone as string | null) ?? null,
     balance: Number(s.balance) || 0,
     kind: "supplier" as const,
+    linked_customer_id: (s.linked_customer_id as string | null) ?? null,
     is_active: s.is_active !== false,
     last_activity_at: (s.last_activity_at as string | null) ?? null,
   }));

@@ -211,6 +211,8 @@ export type SnapshotParty = {
     name: string;
     is_default: boolean;
   } | null;
+  linked_supplier_id?: string | null;
+  linked_customer_id?: string | null;
   is_active?: boolean;
   last_activity_at?: string | null;
 };
