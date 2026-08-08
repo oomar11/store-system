@@ -434,8 +434,22 @@ export default function MobilePartyDetailPage() {
             inputMode="decimal"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
+            placeholder={
+              openTotal <= 0.001
+                ? kind === "customer"
+                  ? "رصيد على الحساب"
+                  : "مقدم على الحساب"
+                : undefined
+            }
           />
         </div>
+        {openTotal <= 0.001 ? (
+          <p className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+            {kind === "customer"
+              ? "مفيش فواتير مفتوحة — التحصيل هيتسجّل رصيد دائن على حساب العميل."
+              : "مفيش فواتير مفتوحة — السداد هيتسجّل مقدم على حساب المورد."}
+          </p>
+        ) : null}
         <div className="mobile-field">
           <label>ملاحظة</label>
           <textarea value={notes} onChange={(e) => setNotes(e.target.value)} />

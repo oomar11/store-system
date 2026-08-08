@@ -31,7 +31,6 @@ import {
   withTimeout,
 } from "@/lib/offline";
 import { useOffline } from "@/components/offline/OfflineProvider";
-import { fetchOpenInvoicesForParty } from "@/lib/party-payments";
 import {
   normalizeActiveSafes,
   safesOrderQuery,
@@ -406,7 +405,6 @@ export default function MobileFinancePage() {
             ? customers.find((c) => c.id === partyId)
             : suppliers.find((s) => s.id === partyId);
         if (!party) throw new Error("الطرف غير موجود");
-        await fetchOpenInvoicesForParty(supabase, kind, partyId);
         await applyPartyPaymentOnlineOrQueue(supabase, {
           kind,
           partyId,
@@ -468,7 +466,7 @@ export default function MobileFinancePage() {
                         تحصيل عميل
                       </span>
                       <span className="mobile-action-card__hint">
-                        استلام مستحقات من العميل
+                        مستحقات أو رصيد مقدم على الحساب
                       </span>
                     </button>
                   ) : null}
@@ -663,20 +661,27 @@ export default function MobileFinancePage() {
           sheet === "pay_supplier") && (
           <>
             {(sheet === "collect" || sheet === "pay_supplier") && (
-              <div className="mobile-field">
-                <label>{sheet === "collect" ? "العميل" : "المورد"}</label>
-                <select
-                  value={partyId}
-                  onChange={(e) => setPartyId(e.target.value)}
-                >
-                  <option value="">اختر...</option>
-                  {(sheet === "collect" ? customers : suppliers).map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({formatCurrency(Math.abs(Number(p.balance)))})
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <>
+                <div className="mobile-field">
+                  <label>{sheet === "collect" ? "العميل" : "المورد"}</label>
+                  <select
+                    value={partyId}
+                    onChange={(e) => setPartyId(e.target.value)}
+                  >
+                    <option value="">اختر...</option>
+                    {(sheet === "collect" ? customers : suppliers).map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({formatCurrency(Math.abs(Number(p.balance)))})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <p className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+                  {sheet === "collect"
+                    ? "لو مفيش فواتير مفتوحة، المبلغ هيتسجّل رصيد دائن على حساب العميل."
+                    : "لو مفيش فواتير مفتوحة، المبلغ هيتسجّل مقدم على حساب المورد."}
+                </p>
+              </>
             )}
 
             {sheet === "expense" && (
