@@ -17,6 +17,17 @@ import { roundMoney } from "@/lib/utils";
 
 export const runtime = "nodejs";
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Idempotency keys must be UUID; ignore legacy non-UUID client strings. */
+function sanitizeClientOpId(value: unknown): string | null {
+  if (value == null) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  return UUID_RE.test(s) ? s : null;
+}
+
 type IssueLineInput = {
   product_id?: string;
   quantity?: number;
@@ -246,7 +257,7 @@ export async function POST(request: NextRequest) {
       paymentMethod: "cash",
       safeId: null,
       notes: notesParts.join(" — "),
-      clientOpId: body.client_op_id || null,
+      clientOpId: sanitizeClientOpId(body.client_op_id),
       forWorkshop: true,
     });
 
