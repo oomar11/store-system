@@ -343,7 +343,7 @@ BEGIN
   IF v_for_workshop THEN
     v_notes := CASE
       WHEN v_notes IS NULL OR v_notes = '' THEN 'صرف داخلي للورشة — بدون حركة خزنة'
-      ELSE v_notes || E'\nصرف داخلي للورشة — بدون حركة خزنة'
+      ELSE v_notes || chr(10) || 'صرف داخلي للورشة — بدون حركة خزنة'
     END;
   END IF;
 
