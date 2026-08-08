@@ -9,7 +9,6 @@ import { invoiceTypeLabel } from "@/lib/history";
 import { safesOrderQuery } from "@/lib/safes-order";
 import { pickDefaultSafeId } from "@/lib/safe-transactions";
 import {
-  applyPartyPayment,
   deletePartyPayment,
   fetchOpenInvoicesForParty,
   getPartyPayment,
@@ -232,8 +231,12 @@ export function PartyPaymentDetailPage({
           offline
             ? `تم الحفظ أوفلاين ${tempNumber || ""} — سيُزامن عند عودة النت`
             : kind === "customer"
-              ? `تم تحصيل ${formatCurrency(payAmount)} بنجاح`
-              : `تم سداد ${formatCurrency(payAmount)} بنجاح`
+              ? totalOpen <= 0.001
+                ? `تم تحصيل ${formatCurrency(payAmount)} كرصيد دائن على الحساب`
+                : `تم تحصيل ${formatCurrency(payAmount)} بنجاح`
+              : totalOpen <= 0.001
+                ? `تم سداد ${formatCurrency(payAmount)} كمقدم على الحساب`
+                : `تم سداد ${formatCurrency(payAmount)} بنجاح`
         );
         if (offline) {
           router.replace(
@@ -412,6 +415,21 @@ export function PartyPaymentDetailPage({
         </div>
       </div>
 
+      {isNew && totalOpen <= 0.001 ? (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          <p className="font-bold">
+            {kind === "customer"
+              ? "مفيش فواتير مفتوحة — تقدر تحصّل دلوقتي"
+              : "مفيش فواتير مفتوحة — تقدر تسدّد دلوقتي"}
+          </p>
+          <p className="mt-1 text-xs font-medium text-emerald-800/90">
+            {kind === "customer"
+              ? "المبلغ يدخل الخزنة ويتسجّل رصيد دائن على حساب العميل لاستخدامه في فواتير لاحقة."
+              : "المبلغ يخرج من الخزنة ويتسجّل مقدم على حساب المورد يُخصم من فواتير لاحقة."}
+          </p>
+        </div>
+      ) : null}
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <SummaryCard
           label={kind === "customer" ? "العميل" : "المورد"}
@@ -557,6 +575,13 @@ export function PartyPaymentDetailPage({
               step="0.01"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
+              placeholder={
+                totalOpen <= 0.001
+                  ? kind === "customer"
+                    ? "مبلغ التحصيل (رصيد على الحساب)"
+                    : "مبلغ السداد (مقدم على الحساب)"
+                  : undefined
+              }
               className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:outline-none"
             />
             {totalOpen > 0 ? (
@@ -567,7 +592,13 @@ export function PartyPaymentDetailPage({
               >
                 تحصيل كامل المتبقي ({formatCurrency(totalOpen)})
               </button>
-            ) : null}
+            ) : (
+              <p className="text-[11px] font-medium text-[#687386]">
+                {kind === "customer"
+                  ? "اكتب أي مبلغ — هيتسجّل له على الحساب حتى لو مفيش فواتير."
+                  : "اكتب أي مبلغ — هيتسجّل مقدم للمورد حتى لو مفيش فواتير."}
+              </p>
+            )}
           </label>
 
           <label className="block space-y-1.5 text-sm">
@@ -730,15 +761,26 @@ export function PartyPaymentDetailPage({
               ))}
             </ul>
           ) : (
-            <p className="py-10 text-center text-sm text-[#687386]">
-              {isNew
-                ? payAmount > 0
-                  ? creditOnAccount > 0.001
-                    ? "لا توجد فواتير مفتوحة — المبلغ يروح رصيد على الحساب"
-                    : "أدخل مبلغاً لعرض الفواتير اللي هتتأثر"
-                  : "أدخل مبلغاً لعرض الفواتير اللي هتتأثر"
-                : "لا توجد فواتير مرتبطة بهذه الدفعة (رصيد على الحساب)"}
-            </p>
+            <div className="space-y-2 px-4 py-10 text-center">
+              <p className="text-sm font-bold text-emerald-800">
+                {isNew
+                  ? kind === "customer"
+                    ? "تحصيل على الحساب (بدون فواتير)"
+                    : "سداد مقدم (بدون فواتير)"
+                  : kind === "customer"
+                    ? "دفعة رصيد على حساب العميل"
+                    : "دفعة مقدم على حساب المورد"}
+              </p>
+              <p className="text-xs text-[#687386]">
+                {isNew
+                  ? payAmount > 0
+                    ? kind === "customer"
+                      ? "المبلغ كامل هيتسجّل رصيد دائن ويُستخدم لاحقاً مع فواتير البيع."
+                      : "المبلغ كامل هيتسجّل مقدم ويُخصم لاحقاً من فواتير الشراء."
+                    : "بعد إدخال المبلغ هيتسجّل على الحساب مباشرة بدون توزيع على فواتير."
+                  : "الدفعة دي اتسجّلت رصيد على الحساب بدون ربط بفاتورة."}
+              </p>
+            </div>
           )}
         </section>
       </div>
@@ -816,8 +858,10 @@ function AllocationPreview({
   }
   if (allocations.length === 0) {
     return (
-      <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-        لا توجد فواتير مفتوحة — المبلغ كامل يروح رصيد على الحساب.
+      <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+        {kind === "customer"
+          ? "تمام — المبلغ كامل هيتسجّل رصيد دائن على حساب العميل للاستخدام لاحقاً."
+          : "تمام — المبلغ كامل هيتسجّل مقدم على حساب المورد للاستخدام لاحقاً."}
       </p>
     );
   }

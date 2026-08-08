@@ -1,5 +1,5 @@
 /* Windoor PWA — cache-first shells so offline never hangs on network */
-const CACHE_VERSION = "windoor-v20";
+const CACHE_VERSION = "windoor-v21";
 const SHELL_CACHE = `${CACHE_VERSION}-shell`;
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;

@@ -627,6 +627,11 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           <button
             type="button"
             onClick={() => router.push(paymentHref())}
+            title={
+              kind === "customer"
+                ? "تحصيل من العميل — حتى لو مفيش فواتير، الرصيد يفضل على الحساب"
+                : "سداد للمورد — حتى لو مفيش فواتير، يتسجّل كمقدم على الحساب"
+            }
             className="inline-flex items-center gap-1.5 rounded-xl bg-[#1473e6] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#0b5fc4]"
           >
             <Wallet className="h-4 w-4" />
