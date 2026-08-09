@@ -91,7 +91,7 @@ export async function fetchOpenInvoicesForParty(
 
   const { data, error } = await supabase
     .from("invoices")
-    .select("id, invoice_number, total, paid_amount, created_at")
+    .select("id, invoice_number, total, paid_amount, created_at, status")
     .eq("type", invoiceType)
     .eq(partyCol, partyId)
     .order("created_at", { ascending: true });
@@ -107,6 +107,7 @@ export async function fetchOpenInvoicesForParty(
   }
 
   return (data || [])
+    .filter((row) => (row.status as string) !== "cancelled")
     .map((row) => {
       const total = money(row.total);
       const paid = money(row.paid_amount);
@@ -152,6 +153,59 @@ export function previewFifoAllocation(
   return { allocations, totalOpen, leftover: left };
 }
 
+/**
+ * Allocate a party payment without closing invoices before covering
+ * non-invoice debt (opening balance, linked debts, etc.).
+ *
+ * Order: (1) cover max(0, partyBalance - openInvoices), (2) FIFO on invoices,
+ * (3) anything left is account credit/advance.
+ */
+export function previewPartyPaymentAllocation(
+  invoices: OpenInvoiceForPayment[],
+  amount: number,
+  partyBalance: number
+): {
+  allocations: AllocationPreview[];
+  totalOpen: number;
+  leftover: number;
+  nonInvoiceCover: number;
+  towardInvoices: number;
+} {
+  const pay = money(amount);
+  const totalOpen = money(
+    invoices.reduce((sum, inv) => sum + inv.remaining, 0)
+  );
+  const bal = money(partyBalance);
+  const nonInvoiceDebt = money(Math.max(0, bal - totalOpen));
+  const nonInvoiceCover = money(Math.min(pay, nonInvoiceDebt));
+  const towardInvoices = money(Math.max(0, pay - nonInvoiceCover));
+  const fifo = previewFifoAllocation(invoices, towardInvoices);
+  const leftover = money(nonInvoiceCover + fifo.leftover);
+
+  return {
+    allocations: fifo.allocations,
+    totalOpen,
+    leftover,
+    nonInvoiceCover,
+    towardInvoices: money(towardInvoices - fifo.leftover),
+  };
+}
+
+async function fetchPartyBalance(
+  supabase: SupabaseClient,
+  kind: PartyPaymentKind,
+  partyId: string
+): Promise<number> {
+  const table = kind === "customer" ? "customers" : "suppliers";
+  const { data, error } = await supabase
+    .from(table)
+    .select("balance")
+    .eq("id", partyId)
+    .maybeSingle();
+  if (error) throw new Error(error.message || "تعذر جلب رصيد الطرف");
+  return money(Number(data?.balance) || 0);
+}
+
 export type ApplyPartyPaymentParams = {
   kind: PartyPaymentKind;
   partyId: string;
@@ -164,10 +218,11 @@ export type ApplyPartyPaymentParams = {
 };
 
 /**
- * Collect from customer / pay supplier: one payment row, FIFO allocations
- * when open invoices exist, one safe movement, and balance decrease.
- * Any unallocated amount (no invoices / amount above open total) stays as
- * party account credit (balance decreases by the full amount).
+ * Collect from customer / pay supplier: one payment row, allocations when
+ * open invoices exist (after covering non-invoice account debt), one safe
+ * movement, and balance decrease.
+ * Any unallocated amount (no invoices / opening debt / amount above open
+ * total) stays on the party account (balance decreases by the full amount).
  */
 export async function applyPartyPayment(
   supabase: SupabaseClient,
@@ -177,12 +232,15 @@ export async function applyPartyPayment(
   if (amount <= 0) throw new Error("أدخل مبلغاً أكبر من صفر.");
   if (!params.safeId) throw new Error("الرجاء تحديد الخزنة.");
 
-  const open = await fetchOpenInvoicesForParty(
-    supabase,
-    params.kind,
-    params.partyId
+  const [open, partyBalance] = await Promise.all([
+    fetchOpenInvoicesForParty(supabase, params.kind, params.partyId),
+    fetchPartyBalance(supabase, params.kind, params.partyId),
+  ]);
+  const { allocations } = previewPartyPaymentAllocation(
+    open,
+    amount,
+    partyBalance
   );
-  const { allocations } = previewFifoAllocation(open, amount);
 
   const {
     data: { user },
@@ -232,12 +290,14 @@ export async function applyPartyPayment(
   for (const a of allocations) {
     const inv = open.find((o) => o.id === a.invoiceId);
     if (!inv) continue;
-    const newPaid = money(inv.paid_amount + a.amount);
+    const slice = money(Math.min(a.amount, inv.remaining));
+    if (slice <= 0.001) continue;
+    const newPaid = money(Math.min(inv.total, inv.paid_amount + slice));
     const { data: updated, error: updErr } = await supabase
       .from("invoices")
       .update({ paid_amount: newPaid })
       .eq("id", a.invoiceId)
-      .lte("paid_amount", money(inv.total) - a.amount + 0.001)
+      .lte("paid_amount", money(inv.paid_amount) + 0.001)
       .select("id")
       .maybeSingle();
     if (updErr) {
@@ -426,13 +486,19 @@ export async function updatePartyPayment(
     amount: money(a.amount),
   }));
 
-  const open = await fetchOpenInvoicesForParty(
-    supabase,
-    kind,
-    payment.party_id as string,
-    { creditAllocations }
+  const [open, currentBalance] = await Promise.all([
+    fetchOpenInvoicesForParty(supabase, kind, payment.party_id as string, {
+      creditAllocations,
+    }),
+    fetchPartyBalance(supabase, kind, payment.party_id as string),
+  ]);
+  // Balance as if this payment were reversed, so non-invoice debt is correct.
+  const balanceBeforePayment = money(currentBalance + oldAmount);
+  const { allocations } = previewPartyPaymentAllocation(
+    open,
+    newAmount,
+    balanceBeforePayment
   );
-  const { allocations } = previewFifoAllocation(open, newAmount);
 
   // Reverse old invoice paid amounts
   for (const a of oldAllocations || []) {
@@ -509,11 +575,15 @@ export async function updatePartyPayment(
     // paid_amount was reversed; apply against the credited baseline
     const { data: current, error: curErr } = await supabase
       .from("invoices")
-      .select("paid_amount")
+      .select("paid_amount, total")
       .eq("id", a.invoiceId)
       .maybeSingle();
     if (curErr) throw new Error(curErr.message);
-    const newPaid = money((Number(current?.paid_amount) || 0) + a.amount);
+    const slice = money(Math.min(a.amount, inv.remaining));
+    if (slice <= 0.001) continue;
+    const basePaid = money(Number(current?.paid_amount) || 0);
+    const invTotal = money(Number(current?.total) || inv.total);
+    const newPaid = money(Math.min(invTotal, basePaid + slice));
     const { error: updErr } = await supabase
       .from("invoices")
       .update({ paid_amount: newPaid })

@@ -13,7 +13,7 @@ import {
   fetchOpenInvoicesForParty,
   getPartyPayment,
   partyPaymentDocNumber,
-  previewFifoAllocation,
+  previewPartyPaymentAllocation,
   updatePartyPayment,
   type AllocationPreview,
   type OpenInvoiceForPayment,
@@ -156,8 +156,7 @@ export function PartyPaymentDetailPage({
           partyId
         );
         setOpenInvoices(invoices);
-        const totalOpen = invoices.reduce((s, i) => s + i.remaining, 0);
-        setAmount(totalOpen > 0 ? String(totalOpen) : "");
+        setAmount("");
       }
     } catch (e) {
       toastError(e instanceof Error ? e.message : "تعذر التحميل");
@@ -172,9 +171,16 @@ export function PartyPaymentDetailPage({
   }, [kind, partyId, paymentId]);
 
   const payAmount = Number(amount) || 0;
+  const previewBalance = useMemo(() => {
+    const current = money(Number(party?.balance || 0));
+    if (isNew) return current;
+    // Treat existing payment as reversed so non-invoice debt matches apply/update.
+    return money(current + Number(payment?.amount || 0));
+  }, [isNew, party?.balance, payment?.amount]);
   const preview = useMemo(
-    () => previewFifoAllocation(openInvoices, payAmount),
-    [openInvoices, payAmount]
+    () =>
+      previewPartyPaymentAllocation(openInvoices, payAmount, previewBalance),
+    [openInvoices, payAmount, previewBalance]
   );
   const totalOpen = preview.totalOpen;
   const balanceAfter = money(
@@ -354,7 +360,9 @@ export function PartyPaymentDetailPage({
 
   const canSave = payAmount > 0 && !!safeId && !saving;
   const creditOnAccount = money(Math.max(0, preview.leftover));
-  const invoiceRemainingAfter = money(Math.max(0, totalOpen - payAmount));
+  const invoiceRemainingAfter = money(
+    Math.max(0, totalOpen - preview.towardInvoices)
+  );
 
   return (
     <div className="space-y-5">
@@ -632,6 +640,7 @@ export function PartyPaymentDetailPage({
             kind={kind}
             allocations={preview.allocations}
             leftover={preview.leftover}
+            nonInvoiceCover={preview.nonInvoiceCover}
             totalOpen={totalOpen}
             payAmount={payAmount}
             remainingAfter={invoiceRemainingAfter}
@@ -818,6 +827,7 @@ function AllocationPreview({
   kind,
   allocations,
   leftover,
+  nonInvoiceCover,
   totalOpen,
   payAmount,
   remainingAfter,
@@ -825,6 +835,7 @@ function AllocationPreview({
   kind: PartyPaymentKind;
   allocations: AllocationPreview[];
   leftover: number;
+  nonInvoiceCover: number;
   totalOpen: number;
   payAmount: number;
   remainingAfter: number;
@@ -836,23 +847,41 @@ function AllocationPreview({
       </p>
     );
   }
-  if (leftover > 0.001) {
-    const creditLabel =
-      kind === "customer"
-        ? "رصيد دائن على حساب العميل"
+  const accountOnly = money(Math.max(0, leftover - nonInvoiceCover));
+  const accountLabel =
+    kind === "customer"
+      ? nonInvoiceCover > 0.001 && accountOnly <= 0.001
+        ? "خصم من رصيد الحساب (افتتاحي/غير مرتبط بفاتورة) قبل قفل الفواتير"
+        : "رصيد دائن على حساب العميل"
+      : nonInvoiceCover > 0.001 && accountOnly <= 0.001
+        ? "خصم من رصيد الحساب (افتتاحي/غير مرتبط بفاتورة) قبل قفل الفواتير"
         : "مقدم على حساب المورد";
+
+  if (leftover > 0.001) {
     return (
       <div className="space-y-2">
+        {nonInvoiceCover > 0.001 ? (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+            {formatCurrency(nonInvoiceCover)} هيتخصم من رصيد الحساب أولاً — من غير
+            قفل فواتير — عشان الدين اللي مش مربوط بفاتورة يتغطى قبل التوزيع.
+          </p>
+        ) : null}
         {allocations.length > 0 ? (
           <p className="rounded-lg border border-[#e1e6ee] bg-[#f8fafc] px-3 py-2 text-xs text-[#526176]">
             سيتم توزيع {formatCurrency(payAmount - leftover)} على{" "}
             {allocations.length} فاتورة.
           </p>
         ) : null}
-        <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
-          {formatCurrency(leftover)} سيُسجَّل كـ{creditLabel}
-          {totalOpen <= 0.001 ? " (بدون فواتير مفتوحة)." : "."}
-        </p>
+        {accountOnly > 0.001 ? (
+          <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+            {formatCurrency(accountOnly)} سيُسجَّل كـ{accountLabel}
+            {totalOpen <= 0.001 ? " (بدون فواتير مفتوحة)." : "."}
+          </p>
+        ) : allocations.length === 0 ? (
+          <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+            {accountLabel}.
+          </p>
+        ) : null}
       </div>
     );
   }
@@ -860,8 +889,8 @@ function AllocationPreview({
     return (
       <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
         {kind === "customer"
-          ? "تمام — المبلغ كامل هيتسجّل رصيد دائن على حساب العميل للاستخدام لاحقاً."
-          : "تمام — المبلغ كامل هيتسجّل مقدم على حساب المورد للاستخدام لاحقاً."}
+          ? "تمام — المبلغ كامل هيتسجّل على حساب العميل (من غير فواتير مفتوحة)."
+          : "تمام — المبلغ كامل هيتسجّل على حساب المورد (من غير فواتير مفتوحة)."}
       </p>
     );
   }
