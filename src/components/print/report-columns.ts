@@ -529,8 +529,18 @@ export const statementInvoiceColumns: ReportColumn[] = [
       if (t === "collection") return "تحصيل";
       if (t === "disbursement") return "سداد";
       if (t === "settlement") return "مقاصة";
-      if (t === "workshop_sale") return "بيع ورشة";
-      if (t === "workshop_collection") return "تحصيل ورشة";
+      if (t === "workshop_sale") {
+        const src = String(r.payment_method ?? "");
+        if (src === "بلسية") return "فاتورة بلسية";
+        if (src === "PVC") return "فاتورة PVC";
+        return "بيع ورشة";
+      }
+      if (t === "workshop_collection") {
+        const src = String(r.payment_method ?? "");
+        if (src === "بلسية") return "تحصيل بلسية";
+        if (src === "PVC") return "تحصيل PVC";
+        return "تحصيل ورشة";
+      }
       if (t === "workshop_adjustment") return "تسوية ورشة";
       if (t === "workshop_void") return "إلغاء ورشة";
       return t || "—";
@@ -617,8 +627,18 @@ export const partyHistoryColumns: ReportColumn[] = [
       if (t === "collection") return "تحصيل";
       if (t === "disbursement") return "سداد";
       if (t === "settlement") return "مقاصة";
-      if (t === "workshop_sale") return "بيع ورشة";
-      if (t === "workshop_collection") return "تحصيل ورشة";
+      if (t === "workshop_sale") {
+        const src = String(r.payment_method ?? r.sourceSystem ?? "");
+        if (src === "بلسية" || src === "plisse") return "فاتورة بلسية";
+        if (src === "PVC" || src === "aa") return "فاتورة PVC";
+        return "بيع ورشة";
+      }
+      if (t === "workshop_collection") {
+        const src = String(r.payment_method ?? r.sourceSystem ?? "");
+        if (src === "بلسية" || src === "plisse") return "تحصيل بلسية";
+        if (src === "PVC" || src === "aa") return "تحصيل PVC";
+        return "تحصيل ورشة";
+      }
       if (t === "workshop_adjustment") return "تسوية ورشة";
       if (t === "workshop_void") return "إلغاء ورشة";
       return t || "—";

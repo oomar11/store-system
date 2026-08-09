@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Printer, X } from "lucide-react";
 import { formatCurrency, formatDateShort } from "@/lib/utils";
@@ -10,6 +10,10 @@ import { resolveStoreName, statementInvoiceColumns } from "./report-columns";
 import { PrintBrandMark } from "./PrintBrandMark";
 import { DateField } from "@/components/ui/DateField";
 import { createClient } from "@/lib/supabase";
+import {
+  crossAppDetailsSummary,
+  parseCrossAppDetails,
+} from "@/lib/history";
 
 type PartyKind = "customer" | "supplier";
 
@@ -25,6 +29,8 @@ type StatementInvoice = {
   notes?: string | null;
   isPartyPayment?: boolean;
   isCrossApp?: boolean;
+  /** ملخص بنود شغل الورشة للطباعة */
+  workshopLinesSummary?: string | null;
 };
 
 interface EntityStatementPreviewProps {
@@ -195,7 +201,7 @@ export function EntityStatementPreview({
       let ledgerQuery = supabase
         .from("cross_app_ledger_entries")
         .select(
-          "id, source_system, source_ref, entry_type, amount, direction, occurred_at, notes, project_label"
+          "id, source_system, source_ref, entry_type, amount, direction, occurred_at, notes, project_label, details"
         )
         .eq("party_type", sideKind)
         .eq("party_id", sideId)
@@ -219,36 +225,56 @@ export function EntityStatementPreview({
         (payRes.data || []) as Record<string, unknown>[],
         sideKind
       );
-      const ledgerRows: StatementInvoice[] = (
-        (ledgerRes.data || []) as {
-          id: string;
-          source_system: string;
-          source_ref: string;
-          entry_type: string;
-          amount: number;
-          direction: string;
-          occurred_at: string;
-          notes?: string | null;
-          project_label?: string | null;
-        }[]
-      ).map((entry) => {
+      let ledgerRaw = (ledgerRes.data || []) as Record<string, unknown>[];
+      if (ledgerRes.error) {
+        let fallbackQuery = supabase
+          .from("cross_app_ledger_entries")
+          .select(
+            "id, source_system, source_ref, entry_type, amount, direction, occurred_at, notes, project_label"
+          )
+          .eq("party_type", sideKind)
+          .eq("party_id", sideId)
+          .order("occurred_at", { ascending: true });
+        if (dateFrom) {
+          fallbackQuery = fallbackQuery.gte(
+            "occurred_at",
+            `${dateFrom}T00:00:00`
+          );
+        }
+        if (dateTo) {
+          fallbackQuery = fallbackQuery.lte(
+            "occurred_at",
+            `${dateTo}T23:59:59`
+          );
+        }
+        const fb = await fallbackQuery;
+        ledgerRaw = (fb.data || []) as Record<string, unknown>[];
+      }
+      const ledgerRows: StatementInvoice[] = ledgerRaw.map((entry) => {
         const amount = Number(entry.amount) || 0;
         const isCredit = entry.direction === "credit";
         const srcLabel =
           entry.source_system === "plisse" ? "بلسية" : "PVC";
+        const details = parseCrossAppDetails(entry.details);
+        const summary = crossAppDetailsSummary(details);
+        const docNo =
+          details?.invoice_number != null
+            ? String(details.invoice_number)
+            : String(entry.source_ref || "").slice(0, 24);
         return {
           id: `xapp-${entry.id}`,
-          invoice_number: String(entry.source_ref || "").slice(0, 24),
+          invoice_number: docNo,
           type: String(entry.entry_type || "workshop_adjustment"),
           total: amount,
           paid_amount: isCredit ? amount : 0,
           payment_method: srcLabel,
-          created_at: entry.occurred_at,
+          created_at: String(entry.occurred_at || ""),
           status: "completed",
           notes: [srcLabel, entry.project_label, entry.notes]
             .filter(Boolean)
             .join(" — "),
           isCrossApp: true,
+          workshopLinesSummary: summary || null,
         };
       });
       return {
@@ -454,14 +480,27 @@ export function EntityStatementPreview({
             </tr>
           ) : (
             invoices.map((inv, index) => (
-              <tr key={inv.id} className="border-b border-slate-200">
-                <td className="px-1 py-1.5 text-slate-500">{index + 1}</td>
-                {statementInvoiceColumns.map((col) => (
-                  <td key={col.key} className="px-1 py-1.5">
-                    {col.getValue(inv as unknown as Record<string, unknown>)}
-                  </td>
-                ))}
-              </tr>
+              <Fragment key={inv.id}>
+                <tr className="border-b border-slate-200">
+                  <td className="px-1 py-1.5 text-slate-500">{index + 1}</td>
+                  {statementInvoiceColumns.map((col) => (
+                    <td key={col.key} className="px-1 py-1.5">
+                      {col.getValue(inv as unknown as Record<string, unknown>)}
+                    </td>
+                  ))}
+                </tr>
+                {inv.workshopLinesSummary ? (
+                  <tr className="border-b border-slate-100 bg-slate-50">
+                    <td />
+                    <td
+                      colSpan={statementInvoiceColumns.length}
+                      className="px-1 py-1 text-[10px] text-slate-600"
+                    >
+                      {inv.workshopLinesSummary}
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
             ))
           )}
         </tbody>

@@ -20,6 +20,25 @@ export type MovementRow = {
   } | null;
 };
 
+export type CrossAppLedgerLine = {
+  product_name?: string;
+  system_label?: string | null;
+  handles_label?: string | null;
+  closure_label?: string | null;
+  width_cm?: number;
+  height_cm?: number;
+  area_m2?: number;
+  unit_price?: number;
+  line_total?: number;
+  notes?: string | null;
+};
+
+export type CrossAppLedgerDetails = {
+  kind?: string;
+  invoice_number?: string | number;
+  lines?: CrossAppLedgerLine[];
+};
+
 export type PartyInvoiceRow = {
   id: string;
   invoice_number: string;
@@ -37,6 +56,8 @@ export type PartyInvoiceRow = {
   /** حركة من ورشة (PVC / بلسية) عبر الجسر */
   isCrossApp?: boolean;
   sourceSystem?: "aa" | "plisse" | "store";
+  /** بنود شغل الورشة (مقاسات/أسعار) إن وُجدت */
+  crossAppDetails?: CrossAppLedgerDetails | null;
 };
 
 const typeLabels: Record<string, string> = {
@@ -54,8 +75,54 @@ const typeLabels: Record<string, string> = {
   workshop_void: "إلغاء ورشة",
 };
 
-export function invoiceTypeLabel(type: string) {
+export function invoiceTypeLabel(
+  type: string,
+  sourceSystem?: "aa" | "plisse" | "store" | null
+) {
+  if (sourceSystem === "plisse") {
+    if (type === "workshop_sale") return "فاتورة بلسية";
+    if (type === "workshop_collection") return "تحصيل بلسية";
+    if (type === "workshop_adjustment") return "تسوية بلسية";
+    if (type === "workshop_void") return "إلغاء بلسية";
+  }
+  if (sourceSystem === "aa") {
+    if (type === "workshop_sale") return "فاتورة PVC";
+    if (type === "workshop_collection") return "تحصيل PVC";
+    if (type === "workshop_adjustment") return "تسوية PVC";
+    if (type === "workshop_void") return "إلغاء PVC";
+  }
   return typeLabels[type] || type;
+}
+
+export function parseCrossAppDetails(raw: unknown): CrossAppLedgerDetails | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as CrossAppLedgerDetails;
+  const lines = Array.isArray(obj.lines) ? obj.lines : [];
+  return {
+    kind: obj.kind ? String(obj.kind) : undefined,
+    invoice_number:
+      obj.invoice_number != null && String(obj.invoice_number).trim() !== ""
+        ? obj.invoice_number
+        : undefined,
+    lines,
+  };
+}
+
+export function crossAppDetailsSummary(details: CrossAppLedgerDetails | null | undefined): string {
+  const lines = details?.lines || [];
+  if (lines.length === 0) return "";
+  return lines
+    .map((line) => {
+      const name = line.product_name || "ضلفة";
+      const dims =
+        line.width_cm != null && line.height_cm != null
+          ? `${line.width_cm}×${line.height_cm} سم`
+          : null;
+      const area =
+        line.area_m2 != null ? `${Number(line.area_m2).toFixed(2)} م²` : null;
+      return [name, dims, area].filter(Boolean).join(" · ");
+    })
+    .join(" | ");
 }
 
 /** Stock direction for display: + in, - out */
@@ -216,20 +283,36 @@ export async function fetchCrossAppPartyHistory(
   partyId: string
 ): Promise<PartyInvoiceRow[]> {
   const supabase = createClient();
-  const { data, error } = await supabase
-    .from("cross_app_ledger_entries")
-    .select(
-      "id, source_system, source_ref, entry_type, amount, direction, occurred_at, notes, project_label"
-    )
-    .eq("party_type", partyType)
-    .eq("party_id", partyId)
-    .order("occurred_at", { ascending: false })
-    .limit(500);
+  const baseCols =
+    "id, source_system, source_ref, entry_type, amount, direction, occurred_at, notes, project_label";
+  let data: Record<string, unknown>[] | null = null;
+  let error: { message: string } | null = null;
+
+  {
+    const res = await supabase
+      .from("cross_app_ledger_entries")
+      .select(`${baseCols}, details`)
+      .eq("party_type", partyType)
+      .eq("party_id", partyId)
+      .order("occurred_at", { ascending: false })
+      .limit(500);
+    data = (res.data || null) as Record<string, unknown>[] | null;
+    error = res.error;
+  }
 
   if (error) {
-    // Table may not exist yet on older deploys
-    console.warn("fetchCrossAppPartyHistory", error.message);
-    return [];
+    const fallback = await supabase
+      .from("cross_app_ledger_entries")
+      .select(baseCols)
+      .eq("party_type", partyType)
+      .eq("party_id", partyId)
+      .order("occurred_at", { ascending: false })
+      .limit(500);
+    if (fallback.error) {
+      console.warn("fetchCrossAppPartyHistory", error.message);
+      return [];
+    }
+    data = (fallback.data || null) as Record<string, unknown>[] | null;
   }
 
   return (data || []).map((entry) => {
@@ -237,13 +320,18 @@ export async function fetchCrossAppPartyHistory(
     const isCredit = entry.direction === "credit";
     const src = entry.source_system === "plisse" ? "plisse" : "aa";
     const srcLabel = src === "plisse" ? "بلسية" : "PVC";
+    const details = parseCrossAppDetails(entry.details);
+    const docNo =
+      details?.invoice_number != null
+        ? String(details.invoice_number)
+        : String(entry.source_ref || "").slice(0, 24);
     return {
       id: `xapp-${entry.id}`,
-      invoice_number: String(entry.source_ref || "").slice(0, 24),
+      invoice_number: docNo,
       type: String(entry.entry_type || "workshop_adjustment"),
       total: amount,
       paid_amount: isCredit ? amount : 0,
-      created_at: entry.occurred_at,
+      created_at: String(entry.occurred_at || ""),
       status: "completed",
       notes: [srcLabel, entry.project_label, entry.notes]
         .filter(Boolean)
@@ -251,6 +339,7 @@ export async function fetchCrossAppPartyHistory(
       payment_method: srcLabel,
       isCrossApp: true,
       sourceSystem: src,
+      crossAppDetails: details,
     } satisfies PartyInvoiceRow;
   });
 }

@@ -214,6 +214,8 @@ export type LedgerEntryInput = {
   occurredAt?: string | null;
   notes?: string | null;
   projectLabel?: string | null;
+  /** Workshop line payload (e.g. plisse door dims) for party account UI */
+  details?: Record<string, unknown> | null;
 };
 
 export async function applyCrossAppLedgerEntry(
@@ -231,6 +233,7 @@ export async function applyCrossAppLedgerEntry(
     p_occurred_at: input.occurredAt || null,
     p_notes: input.notes || null,
     p_project_label: input.projectLabel || null,
+    p_details: input.details ?? null,
   });
   if (error) throw new Error(error.message || "تعذر تسجيل حركة الورشة");
   return data as {

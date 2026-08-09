@@ -12,6 +12,7 @@ import {
   fetchSupplierHistory,
   invoiceTypeLabel,
   partyPaymentToHistoryRow,
+  type CrossAppLedgerLine,
   type PartyInvoiceRow,
 } from "@/lib/history";
 import {
@@ -438,6 +439,18 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
     );
   }
 
+  function workshopDetailLines(row: PartyInvoiceRow): CrossAppLedgerLine[] {
+    return row.crossAppDetails?.lines || [];
+  }
+
+  function hasWorkshopDetails(row: PartyInvoiceRow) {
+    return Boolean(row.isCrossApp && workshopDetailLines(row).length > 0);
+  }
+
+  function canExpandDetails(row: PartyInvoiceRow) {
+    return isInvoiceRow(row) || hasWorkshopDetails(row);
+  }
+
   async function loadInvoiceItems(invoiceId: string) {
     if (invoiceItemsByInvoiceId[invoiceId] || itemsLoadingByInvoiceId[invoiceId]) return;
     setItemsLoadingByInvoiceId((prev) => ({ ...prev, [invoiceId]: true }));
@@ -460,14 +473,16 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
   }
 
   async function toggleInvoiceDetails(row: PartyInvoiceRow) {
-    if (!isInvoiceRow(row)) return;
+    if (!canExpandDetails(row)) return;
     const isExpanded = !!expandedInvoiceIds[row.id];
     if (isExpanded) {
       setExpandedInvoiceIds((prev) => ({ ...prev, [row.id]: false }));
       return;
     }
     setExpandedInvoiceIds((prev) => ({ ...prev, [row.id]: true }));
-    await loadInvoiceItems(row.id);
+    if (isInvoiceRow(row)) {
+      await loadInvoiceItems(row.id);
+    }
   }
 
   async function printInvoiceDetails(row: PartyInvoiceRow) {
@@ -718,7 +733,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
       if (typeFilter && row.type !== typeFilter) return false;
       return smartSearchMatch(searchTerm, [
         row.invoice_number,
-        invoiceTypeLabel(row.type),
+        invoiceTypeLabel(row.type, row.sourceSystem),
         row.notes,
       ]);
     });
@@ -730,7 +745,8 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           row.type === "sale" ||
           row.type === "purchase" ||
           row.type === "sale_return" ||
-          row.type === "purchase_return"
+          row.type === "purchase_return" ||
+          hasWorkshopDetails(row)
       ),
     [filtered]
   );
@@ -749,7 +765,11 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
       for (const row of visibleInvoiceRows) next[row.id] = true;
       return next;
     });
-    await Promise.all(visibleInvoiceRows.map((row) => loadInvoiceItems(row.id)));
+    await Promise.all(
+      visibleInvoiceRows
+        .filter((row) => isInvoiceRow(row))
+        .map((row) => loadInvoiceItems(row.id))
+    );
   }
 
   function collapseAllVisibleInvoiceDetails() {
@@ -818,6 +838,10 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
       return;
     }
     if (row.isCrossApp) {
+      if (hasWorkshopDetails(row)) {
+        void toggleInvoiceDetails(row);
+        return;
+      }
       toastInfo(
         row.sourceSystem === "plisse"
           ? "حركة من برنامج البلسية — تظهر في الكشف الموحّد."
@@ -910,7 +934,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
         ["collection", "تحصيل"],
         ["disbursement", "سداد"],
         ["settlement", "مقاصة"],
-        ["workshop_sale", "بيع ورشة"],
+        ["workshop_sale", "فاتورة ورشة"],
         ["workshop_collection", "تحصيل ورشة"],
         ["workshop_adjustment", "تسوية ورشة"],
         ["opening", "رصيد افتتاحي"],
@@ -922,7 +946,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           ["sale_return", "مرتجع بيع"],
           ["collection", "تحصيل"],
           ["settlement", "مقاصة"],
-          ["workshop_sale", "بيع ورشة"],
+          ["workshop_sale", "فاتورة ورشة"],
           ["workshop_collection", "تحصيل ورشة"],
           ["workshop_adjustment", "تسوية ورشة"],
           ["opening", "رصيد افتتاحي"],
@@ -933,7 +957,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           ["purchase_return", "مرتجع شراء"],
           ["disbursement", "سداد"],
           ["settlement", "مقاصة"],
-          ["workshop_sale", "بيع ورشة"],
+          ["workshop_sale", "فاتورة ورشة"],
           ["workshop_collection", "تحصيل ورشة"],
           ["workshop_adjustment", "تسوية ورشة"],
           ["opening", "رصيد افتتاحي"],
@@ -1266,9 +1290,11 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
                     row.type === "disbursement"
                       ? null
                       : Number(row.total) - Number(row.paid_amount);
-                  const canShowDetails = isInvoiceRow(row);
+                  const canShowDetails = canExpandDetails(row);
+                  const isWorkshopDetails = hasWorkshopDetails(row);
                   const isExpanded = !!expandedInvoiceIds[row.id];
                   const detailItems = invoiceItemsByInvoiceId[row.id] || [];
+                  const workshopLines = workshopDetailLines(row);
                   const detailsLoading = !!itemsLoadingByInvoiceId[row.id];
                   return (
                     <Fragment key={row.id}>
@@ -1276,9 +1302,15 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
                         onClick={() => openOperation(row)}
                         className="cursor-pointer hover:bg-[#eef6ff]"
                         title={
-                          row.isPartyPayment
-                            ? "فتح تفاصيل التحصيل/السداد"
-                            : "اختر العملية"
+                          row.isOpening
+                            ? "رصيد افتتاحي"
+                            : row.isCrossApp
+                              ? hasWorkshopDetails(row)
+                                ? "عرض تفاصيل شغل الورشة"
+                                : "حركة من برنامج ورشة"
+                              : row.isPartyPayment
+                                ? "فتح تفاصيل التحصيل/السداد"
+                                : "اختر العملية"
                         }
                       >
                         <td className="px-3 py-2.5 text-[#526176]">
@@ -1305,7 +1337,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
                           {row.invoice_number}
                         </td>
                         <td className="px-3 py-2.5">
-                          {invoiceTypeLabel(row.type)}
+                          {invoiceTypeLabel(row.type, row.sourceSystem)}
                           {row.notes &&
                           (row.type === "opening" ||
                             row.isPartyPayment ||
@@ -1359,29 +1391,106 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
                       </tr>
                       {canShowDetails && isExpanded ? (
                         <tr className="bg-[#fbfdff]">
-                          <td colSpan={7} className="px-4 py-3">
+                          <td colSpan={8} className="px-4 py-3">
                             <div className="rounded-xl border border-[#dce8f8] bg-white p-3">
                               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                                 <p className="text-xs font-bold text-[#35506f]">
-                                  تفاصيل البنود — {row.invoice_number}
+                                  {isWorkshopDetails
+                                    ? `تفاصيل الشغل — ${row.invoice_number}`
+                                    : `تفاصيل البنود — ${row.invoice_number}`}
                                 </p>
-                                <button
-                                  type="button"
-                                  disabled={inlinePrintLoadingId === row.id}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    void printInvoiceDetails(row);
-                                  }}
-                                  className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
-                                >
-                                  <Printer className="h-3.5 w-3.5" />
-                                  {inlinePrintLoadingId === row.id
-                                    ? "جاري التحضير..."
-                                    : "طباعة تفصيلية"}
-                                </button>
+                                {!isWorkshopDetails ? (
+                                  <button
+                                    type="button"
+                                    disabled={inlinePrintLoadingId === row.id}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void printInvoiceDetails(row);
+                                    }}
+                                    className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+                                  >
+                                    <Printer className="h-3.5 w-3.5" />
+                                    {inlinePrintLoadingId === row.id
+                                      ? "جاري التحضير..."
+                                      : "طباعة تفصيلية"}
+                                  </button>
+                                ) : null}
                               </div>
 
-                              {detailsLoading ? (
+                              {isWorkshopDetails ? (
+                                <div className="overflow-auto">
+                                  <table className="w-full border-collapse text-xs">
+                                    <thead className="bg-[#f7faff] text-[#526176]">
+                                      <tr>
+                                        <th className="px-2 py-1.5 text-right font-semibold">
+                                          الصنف
+                                        </th>
+                                        <th className="px-2 py-1.5 text-right font-semibold">
+                                          النظام / المقابض
+                                        </th>
+                                        <th className="px-2 py-1.5 text-right font-semibold">
+                                          المقاس (سم)
+                                        </th>
+                                        <th className="px-2 py-1.5 text-right font-semibold">
+                                          المساحة
+                                        </th>
+                                        <th className="px-2 py-1.5 text-right font-semibold">
+                                          سعر المتر
+                                        </th>
+                                        <th className="px-2 py-1.5 text-right font-semibold">
+                                          الإجمالي
+                                        </th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-[#eef1f6]">
+                                      {workshopLines.map((line, idx) => (
+                                        <tr key={`${row.id}-line-${idx}`}>
+                                          <td className="px-2 py-1.5">
+                                            <span className="font-semibold text-[#172033]">
+                                              {line.product_name || "ضلفة"}
+                                            </span>
+                                            {line.notes ? (
+                                              <span className="mt-0.5 block text-[10px] text-[#7a8699]">
+                                                {line.notes}
+                                              </span>
+                                            ) : null}
+                                          </td>
+                                          <td className="px-2 py-1.5 text-[#526176]">
+                                            {[
+                                              line.system_label,
+                                              line.handles_label,
+                                              line.closure_label,
+                                            ]
+                                              .filter(Boolean)
+                                              .join(" · ") || "—"}
+                                          </td>
+                                          <td className="px-2 py-1.5 font-mono">
+                                            {line.width_cm != null &&
+                                            line.height_cm != null
+                                              ? `${line.width_cm} × ${line.height_cm}`
+                                              : "—"}
+                                          </td>
+                                          <td className="px-2 py-1.5">
+                                            {line.area_m2 != null
+                                              ? `${Number(line.area_m2).toFixed(2)} م²`
+                                              : "—"}
+                                          </td>
+                                          <td className="px-2 py-1.5">
+                                            {line.unit_price != null
+                                              ? formatCurrency(Number(line.unit_price))
+                                              : "—"}
+                                          </td>
+                                          <td className="px-2 py-1.5 font-semibold text-[#172033]">
+                                            {line.line_total != null
+                                              ? formatCurrency(Number(line.line_total))
+                                              : "—"}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              ) : detailsLoading ? (
                                 <p className="text-xs text-[#687386]">
                                   جاري تحميل بنود الفاتورة...
                                 </p>

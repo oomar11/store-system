@@ -40,6 +40,7 @@ type PostBody = {
   occurred_at?: string | null;
   notes?: string | null;
   project_label?: string | null;
+  details?: Record<string, unknown> | null;
 };
 
 /**
@@ -111,6 +112,10 @@ export async function POST(request: NextRequest) {
 
   try {
     const client = await createServiceClient();
+    const details =
+      body.details && typeof body.details === "object" && !Array.isArray(body.details)
+        ? body.details
+        : null;
     const result = await applyCrossAppLedgerEntry(client, {
       sourceSystem: parseSource(body.source_system),
       sourceRef,
@@ -122,6 +127,7 @@ export async function POST(request: NextRequest) {
       occurredAt: body.occurred_at,
       notes: body.notes,
       projectLabel: body.project_label,
+      details,
     });
     return withWorkshopCors(NextResponse.json({ ok: true, ...result }));
   } catch (e) {
