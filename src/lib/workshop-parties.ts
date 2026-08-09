@@ -218,11 +218,22 @@ export type LedgerEntryInput = {
   details?: Record<string, unknown> | null;
 };
 
+function isMissingLedgerRpcError(message: string | undefined): boolean {
+  return /Could not find the function.*apply_cross_app_ledger_entry/i.test(
+    message || ""
+  );
+}
+
 export async function applyCrossAppLedgerEntry(
   client: SupabaseClient,
   input: LedgerEntryInput
 ) {
-  const { data, error } = await client.rpc("apply_cross_app_ledger_entry", {
+  // PostgREST matches RPCs by the exact named-arg set in the JSON body.
+  // Always sending `p_details: null` forces the 11-arg signature — if migration
+  // `20260811_cross_app_ledger_details.sql` is not applied yet, payments fail.
+  // Only include p_details when we actually have a payload; fall back to the
+  // 10-arg RPC if the details overload is missing from the schema cache.
+  const baseParams = {
     p_source_system: input.sourceSystem,
     p_source_ref: input.sourceRef,
     p_party_type: input.partyType,
@@ -233,9 +244,29 @@ export async function applyCrossAppLedgerEntry(
     p_occurred_at: input.occurredAt || null,
     p_notes: input.notes || null,
     p_project_label: input.projectLabel || null,
-    p_details: input.details ?? null,
-  });
-  if (error) throw new Error(error.message || "تعذر تسجيل حركة الورشة");
+  };
+  const params =
+    input.details != null
+      ? { ...baseParams, p_details: input.details }
+      : baseParams;
+
+  let { data, error } = await client.rpc("apply_cross_app_ledger_entry", params);
+
+  if (error && input.details != null && isMissingLedgerRpcError(error.message)) {
+    ({ data, error } = await client.rpc(
+      "apply_cross_app_ledger_entry",
+      baseParams
+    ));
+  }
+
+  if (error) {
+    if (isMissingLedgerRpcError(error.message)) {
+      throw new Error(
+        "دالة حساب الورشة غير مفعّلة على قاعدة البيانات — طبّق migration جسر الأطراف (cross_app_ledger) ثم أعد المحاولة"
+      );
+    }
+    throw new Error(error.message || "تعذر تسجيل حركة الورشة");
+  }
   return data as {
     id: string | null;
     delta: number;
