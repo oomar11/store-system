@@ -1,5 +1,5 @@
 /** Shared cache version — Serwist also manages precache; keep for warm-cache compat */
-export const OFFLINE_CACHE_VERSION = "windoor-v24";
+export const OFFLINE_CACHE_VERSION = "windoor-v25";
 export const OFFLINE_SHELL_CACHE = `${OFFLINE_CACHE_VERSION}-shell`;
 export const OFFLINE_STATIC_CACHE = `${OFFLINE_CACHE_VERSION}-static`;
 
