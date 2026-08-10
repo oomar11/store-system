@@ -141,7 +141,7 @@ export async function readLocalThenNetwork<T>(
  * Uses /api/health (SW must hit the network — not a cached shell asset).
  * Results are cached briefly via setConnectivityCache.
  */
-export async function probeOnline(timeoutMs = 800): Promise<boolean> {
+export async function probeOnline(timeoutMs = 2500): Promise<boolean> {
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
     setConnectivityCache(false);
     return false;

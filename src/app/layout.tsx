@@ -18,7 +18,7 @@ const themeInitScript = `(function(){try{var k='windoor-theme';var t=localStorag
 export const metadata: Metadata = {
   title: "ويندور - Windoor",
   description: "نظام إدارة المخزون والحسابات - ويندور",
-  manifest: "/manifest.json?v=16",
+  manifest: "/manifest.json?v=17",
   icons: {
     icon: [
       {
@@ -80,6 +80,9 @@ export default function RootLayout({
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        <meta name="screen-orientation" content="portrait" />
+        <meta name="x5-orientation" content="portrait" />
+        <meta name="mobile-web-app-capable" content="yes" />
         <link
           rel="icon"
           href="/icons/app-favicon.ico"

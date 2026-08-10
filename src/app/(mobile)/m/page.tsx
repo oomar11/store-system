@@ -12,7 +12,6 @@ import {
   readLocalThenNetwork,
   withTimeout,
 } from "@/lib/offline";
-import { useOffline } from "@/components/offline/OfflineProvider";
 import {
   normalizeActiveSafes,
   safesOrderQuery,
@@ -65,7 +64,6 @@ function emptyStats(): HomeStats {
 export default function MobileHomePage() {
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
-  const { online } = useOffline();
   const { profile, loading: authLoading } = useAuth();
   const subject = profileSubject(profile);
 
@@ -81,7 +79,10 @@ export default function MobileHomePage() {
 
   const load = useCallback(async () => {
     const since = startOfTodayIso();
-    const offline = !online || !navigator.onLine;
+    // Only trust the browser offline flag for reads — OfflineProvider probe
+    // often false-negatives and left home "آخر الحركات" on empty local data.
+    const offline =
+      typeof navigator !== "undefined" && navigator.onLine === false;
 
     await readLocalThenNetwork<HomeStats>({
       offline,
@@ -303,7 +304,7 @@ export default function MobileHomePage() {
           safes: normalizeActiveSafes(data.safes),
         }),
     });
-  }, [canProducts, canSales, canTreasury, online, supabase]);
+  }, [canProducts, canSales, canTreasury, supabase]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -353,7 +354,7 @@ export default function MobileHomePage() {
         subtitle={
           profile?.full_name
             ? `مرحباً، ${profile.full_name}`
-            : online
+            : typeof navigator !== "undefined" && navigator.onLine
               ? "متصل بالسحابة"
               : "وضع أوفلاين"
         }

@@ -1121,7 +1121,9 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator,
   display: none;
 }
 
-@media screen and (orientation: landscape) and (max-height: 520px) {
+/* Phone/tablet landscape: block the UI (do not rely on Orientation.lock —
+   browsers often ignore it outside fullscreen / installed PWA). */
+@media screen and (orientation: landscape) and (max-width: 1024px) {
   html.mobile-portrait-lock .mobile-landscape-blocker {
     position: fixed;
     inset: 0;
@@ -1151,6 +1153,7 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator,
   html.mobile-portrait-lock .mobile-app__inner,
   html.mobile-portrait-lock .mobile-bottom-nav {
     visibility: hidden;
+    pointer-events: none;
   }
 }
 

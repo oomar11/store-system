@@ -19,6 +19,7 @@ import {
 } from "@/lib/safe-transactions";
 import {
   ensureExpenseAccounts,
+  EXPENSE_REFERENCE_TYPE,
   type ExpenseListItem,
 } from "@/lib/expenses";
 import {
@@ -27,8 +28,10 @@ import {
   getSnapshot,
   listActiveEntities,
 } from "@/lib/offline";
-import { useOffline } from "@/components/offline/OfflineProvider";
-import { normalizeActiveSafes } from "@/lib/safes-order";
+import {
+  normalizeActiveSafes,
+  safesOrderQuery,
+} from "@/lib/safes-order";
 import { formatCurrency, formatDateShort } from "@/lib/utils";
 import { MobileHeader } from "@/components/mobile/MobileHeader";
 import {
@@ -58,7 +61,6 @@ const TX_TYPE_LABELS: Record<string, string> = {
 
 export default function MobileFinancePage() {
   const supabase = useMemo(() => createClient(), []);
-  const { online } = useOffline();
   const { profile, loading: authLoading } = useAuth();
   const subject = profileSubject(profile);
   const canTreasury = canAccess(subject, "treasury");
@@ -108,7 +110,10 @@ export default function MobileFinancePage() {
   const [partyId, setPartyId] = useState("");
 
   const load = useCallback(async () => {
-    const offline = !online || !navigator.onLine;
+    // Do NOT gate on OfflineProvider probe — it often marks the app offline
+    // while Supabase still works, which left "آخر الحركات" stuck on empty IDB.
+    const browserOffline =
+      typeof navigator !== "undefined" && navigator.onLine === false;
     setFeedError("");
 
     function mapLocalSafes(
@@ -164,12 +169,11 @@ export default function MobileFinancePage() {
       setTxRows(rows);
     }
 
-    if (offline) {
+    async function loadLocalFallback(message?: string) {
+      if (message) setFeedError(message);
       const snap = await getSnapshot();
-      const localSafes = canTreasury
-        ? mapLocalSafes(snap?.safes || [])
-        : [];
-      setSafes(localSafes);
+      const localSafes = canTreasury ? mapLocalSafes(snap?.safes || []) : [];
+      if (localSafes.length) setSafes(localSafes);
       if (canCustomers) {
         setCustomers(
           (snap?.customers || [])
@@ -205,7 +209,6 @@ export default function MobileFinancePage() {
       const def = pickDefaultSafeId(localSafes);
       if (def) setSafeId((prev) => prev || def);
       if (localSafes[1]) setToSafeId((prev) => prev || localSafes[1].id);
-
       const nameById = new Map(
         localSafes.map((s) => [s.id, s.name] as const)
       );
@@ -218,77 +221,129 @@ export default function MobileFinancePage() {
           setExpenses([]);
         }
       }
+    }
+
+    if (browserOffline) {
+      await loadLocalFallback("أنت غير متصل — عرض البيانات المحلية");
       return;
     }
 
-    // Online: one authenticated feed API (avoids PostgREST embed failures).
+    // Online: browser Supabase session (same auth as the rest of the app).
+    // Avoid fragile PostgREST multi-FK embeds and cookie-only API routes.
     try {
-      const res = await fetch("/api/mobile/treasury-feed", {
-        method: "GET",
-        credentials: "same-origin",
-        cache: "no-store",
-        headers: { Accept: "application/json" },
-      });
-      const json = (await res.json().catch(() => ({}))) as {
-        ok?: boolean;
-        error?: string;
-        safes?: Safe[];
-        transactions?: Array<{
-          id: string;
-          type: string;
-          amount: number;
-          description: string | null;
-          created_at: string;
-          safe_name?: string;
-        }>;
-        expenses?: Array<{
-          entry_id: string;
-          expense_account_name: string;
-          amount: number;
-          date: string;
-          safe_name: string;
-          created_at?: string;
-        }>;
-      };
+      const [safesRes, txRes, expenseTxRes, custRes, suppRes] =
+        await Promise.all([
+          canTreasury
+            ? safesOrderQuery(
+                supabase.from("safes").select("*").eq("is_active", true)
+              )
+            : Promise.resolve({ data: [] as Safe[], error: null }),
+          canTreasury
+            ? supabase
+                .from("safe_transactions")
+                .select(
+                  "id, type, amount, description, notes, created_at, safe_id"
+                )
+                .order("created_at", { ascending: false })
+                .limit(50)
+            : Promise.resolve({ data: [] as unknown[], error: null }),
+          canExpenses
+            ? supabase
+                .from("safe_transactions")
+                .select(
+                  "id, type, amount, description, notes, created_at, safe_id, reference_id, reference_type"
+                )
+                .eq("reference_type", EXPENSE_REFERENCE_TYPE)
+                .eq("type", "withdrawal")
+                .order("created_at", { ascending: false })
+                .limit(30)
+            : Promise.resolve({ data: [] as unknown[], error: null }),
+          canCustomers
+            ? supabase
+                .from("customers")
+                .select("*")
+                .eq("is_active", true)
+                .order("name")
+                .limit(200)
+            : Promise.resolve({ data: [] as Customer[], error: null }),
+          canSuppliers
+            ? supabase
+                .from("suppliers")
+                .select("*")
+                .eq("is_active", true)
+                .order("name")
+                .limit(200)
+            : Promise.resolve({ data: [] as Supplier[], error: null }),
+        ]);
 
-      if (!res.ok || !json.ok) {
-        throw new Error(json.error || `تعذر تحميل المالية (${res.status})`);
+      if (safesRes.error) {
+        throw new Error(safesRes.error.message || "تعذر تحميل الخزائن");
+      }
+      if (txRes.error) {
+        throw new Error(txRes.error.message || "تعذر تحميل الحركات");
       }
 
-      const nextSafes = normalizeActiveSafes(json.safes || []);
+      const nextSafes = normalizeActiveSafes((safesRes.data || []) as Safe[]);
       setSafes(nextSafes);
       const def = pickDefaultSafeId(nextSafes);
       if (def) setSafeId((prev) => prev || def);
       if (nextSafes[1]) setToSafeId((prev) => prev || nextSafes[1].id);
 
+      const nameById = new Map(
+        nextSafes.map((s) => [String(s.id), String(s.name || "خزنة")] as const)
+      );
+
+      const txData = (txRes.data || []) as Array<{
+        id: string;
+        type: string;
+        amount: number;
+        description: string | null;
+        notes: string | null;
+        created_at: string;
+        safe_id: string | null;
+      }>;
+
       setTxRows(
-        (json.transactions || [])
+        txData
           .filter((t) => t.id)
           .map((t) => ({
-            id: t.id,
-            type: t.type,
-            amount: t.amount,
-            description: t.description,
+            id: String(t.id),
+            type: String(t.type || ""),
+            amount: Number(t.amount) || 0,
+            description: t.description || t.notes || null,
             created_at: t.created_at || new Date().toISOString(),
-            safe: { name: t.safe_name || "خزنة" },
+            safe: {
+              name: nameById.get(String(t.safe_id)) || "خزنة",
+            },
           }))
       );
 
       if (canExpenses) {
+        const expenseRows = (
+          expenseTxRes.error ? [] : expenseTxRes.data || []
+        ) as Array<{
+          id: string;
+          amount: number;
+          description: string | null;
+          notes: string | null;
+          created_at: string;
+          safe_id: string | null;
+          reference_id: string | null;
+        }>;
         setExpenses(
-          (json.expenses || []).map((e) => ({
-            entry_id: e.entry_id,
+          expenseRows.map((e) => ({
+            entry_id: String(e.reference_id || e.id),
             entry_number: "",
-            date: e.date,
-            description: e.expense_account_name,
-            amount: e.amount,
+            date: String(e.created_at || "").slice(0, 10),
+            description: e.description || e.notes || "مصروف",
+            amount: Number(e.amount) || 0,
             expense_account_id: "",
             expense_account_code: "",
-            expense_account_name: e.expense_account_name,
-            safe_id: "",
-            safe_name: e.safe_name,
-            safe_transaction_id: e.entry_id,
-            created_at: e.created_at || e.date,
+            expense_account_name: e.description || e.notes || "مصروف",
+            safe_id: String(e.safe_id || ""),
+            safe_name: nameById.get(String(e.safe_id)) || "خزنة",
+            safe_transaction_id: String(e.id),
+            created_at: e.created_at || "",
           }))
         );
         await ensureExpenseAccounts(supabase);
@@ -304,48 +359,20 @@ export default function MobileFinancePage() {
         }
       }
 
-      // Parties still needed for collect/pay sheets
-      const [custRes, suppRes] = await Promise.all([
-        canCustomers
-          ? supabase
-              .from("customers")
-              .select("*")
-              .eq("is_active", true)
-              .order("name")
-              .limit(200)
-          : Promise.resolve({ data: [] as Customer[], error: null }),
-        canSuppliers
-          ? supabase
-              .from("suppliers")
-              .select("*")
-              .eq("is_active", true)
-              .order("name")
-              .limit(200)
-          : Promise.resolve({ data: [] as Supplier[], error: null }),
-      ]);
       setCustomers((custRes.data || []) as Customer[]);
       setSuppliers((suppRes.data || []) as Supplier[]);
       setFeedError("");
     } catch (err) {
       console.warn("[mobile/finance] network load failed", err);
-      setFeedError(
+      await loadLocalFallback(
         err instanceof Error ? err.message : "تعذر تحميل آخر الحركات"
       );
-      // Fall back to local catalog so the page still opens offline-ish.
-      const snap = await getSnapshot();
-      const localSafes = canTreasury ? mapLocalSafes(snap?.safes || []) : [];
-      if (localSafes.length) setSafes(localSafes);
-      const nameById = new Map(
-        localSafes.map((s) => [s.id, s.name] as const)
-      );
-      await loadTxFromLocal(nameById);
     }
   }, [
     canCustomers,
     canExpenses,
     canSuppliers,
     canTreasury,
-    online,
     supabase,
   ]);
 
