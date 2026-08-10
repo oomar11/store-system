@@ -15,80 +15,98 @@ type SafeLike = {
   is_active?: boolean;
   balance?: number;
   sort_order?: number | null;
+  deleted_at?: string | null;
+  updated_at?: string | null;
+  created_at?: string | null;
 };
 
-/** Normalize Arabic/English safe names for ghost dedupe. */
+export type NormalizeActiveSafesOptions = {
+  /**
+   * Collapse duplicate display names (offline ghosts).
+   * Keep OFF for authoritative server lists so every real vault stays selectable.
+   */
+  dedupeByName?: boolean;
+  /** When true, keep rows with is_active === false (for clearer transfer errors). */
+  includeInactive?: boolean;
+};
+
+/** Normalize Arabic/English safe names for ghost dedupe / fuzzy match. */
 export function normalizeSafeNameKey(name: string): string {
   return String(name || "")
     .trim()
     .replace(/[\u064B-\u065F\u0670\u0640]/g, "") // harakat + tatweel
+    .replace(/[إأآٱ]/g, "ا")
+    .replace(/ة/g, "ه")
+    .replace(/ى/g, "ي")
+    .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
     .replace(/\s+/g, " ")
     .toLowerCase();
 }
 
+function rowTimestamp(row: {
+  updated_at?: string | null;
+  created_at?: string | null;
+}): number {
+  return (
+    Date.parse(String(row.updated_at || row.created_at || "")) || 0
+  );
+}
+
 /**
- * Active safes only, unique by id (and by name for stale offline ghosts),
+ * Active safes only, unique by id (optionally by name for stale offline ghosts),
  * sorted by sort_order then Arabic name.
  */
 export function normalizeActiveSafes<T extends SafeLike>(
-  rows: T[] | null | undefined
+  rows: T[] | null | undefined,
+  options?: NormalizeActiveSafesOptions
 ): T[] {
+  const dedupeByName = options?.dedupeByName === true;
+  const includeInactive = options?.includeInactive === true;
   const byId = new Map<string, T>();
   for (const row of rows || []) {
     if (!row?.id) continue;
     // Treat only explicit false as inactive; missing means active for older rows.
-    if (row.is_active === false) continue;
+    if (!includeInactive && row.is_active === false) continue;
     // Soft-deleted rows from local-first sync must not appear in pickers.
-    const deletedAt = (row as { deleted_at?: string | null }).deleted_at;
-    if (deletedAt) continue;
+    if (row.deleted_at) continue;
     byId.set(String(row.id), row);
   }
 
-  // Collapse sync ghosts that kept the same display name under a dead id.
-  // Prefer the newest row (updated_at/created_at) — NOT higher balance —
-  // because offline ghosts often keep a stale inflated balance.
-  const byName = new Map<string, T>();
-  for (const row of byId.values()) {
-    const key = normalizeSafeNameKey(row.name);
-    if (!key) {
-      byName.set(`__id:${row.id}`, row);
-      continue;
+  let list = Array.from(byId.values());
+
+  // Only collapse names for dirty offline snapshots. Server lists must keep
+  // every distinct id — otherwise some vaults become unselectable/untransferable.
+  if (dedupeByName) {
+    const byName = new Map<string, T>();
+    for (const row of list) {
+      const key = normalizeSafeNameKey(row.name);
+      if (!key) {
+        byName.set(`__id:${row.id}`, row);
+        continue;
+      }
+      const prev = byName.get(key);
+      if (!prev) {
+        byName.set(key, row);
+        continue;
+      }
+      const prevTs = rowTimestamp(prev);
+      const nextTs = rowTimestamp(row);
+      if (nextTs > prevTs) {
+        byName.set(key, row);
+        continue;
+      }
+      if (
+        nextTs === prevTs &&
+        row.is_active === true &&
+        prev.is_active !== true
+      ) {
+        byName.set(key, row);
+      }
     }
-    const prev = byName.get(key);
-    if (!prev) {
-      byName.set(key, row);
-      continue;
-    }
-    const prevTs =
-      Date.parse(
-        String(
-          (prev as { updated_at?: string; created_at?: string }).updated_at ||
-            (prev as { created_at?: string }).created_at ||
-            ""
-        )
-      ) || 0;
-    const nextTs =
-      Date.parse(
-        String(
-          (row as { updated_at?: string; created_at?: string }).updated_at ||
-            (row as { created_at?: string }).created_at ||
-            ""
-        )
-      ) || 0;
-    if (nextTs > prevTs) {
-      byName.set(key, row);
-      continue;
-    }
-    if (
-      nextTs === prevTs &&
-      row.is_active === true &&
-      prev.is_active !== true
-    ) {
-      byName.set(key, row);
-    }
+    list = Array.from(byName.values());
   }
 
-  return Array.from(byName.values()).sort((a, b) => {
+  return list.sort((a, b) => {
     const ao = a.sort_order ?? 9999;
     const bo = b.sort_order ?? 9999;
     if (ao !== bo) return ao - bo;

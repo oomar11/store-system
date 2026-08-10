@@ -134,7 +134,8 @@ export default function MobilePartyDetailPage() {
                     sort_order: s.sort_order ?? undefined,
                     created_at: "",
                   }) as Safe
-              )
+              ),
+              { dedupeByName: true }
             ),
           };
         },
