@@ -241,8 +241,22 @@ export default function MobileFinancePage() {
         await Promise.all([
           canTreasury
             ? safesOrderQuery(
-                supabase.from("safes").select("*").eq("is_active", true)
-              )
+                supabase
+                  .from("safes")
+                  .select("*")
+                  .eq("is_active", true)
+                  .is("deleted_at", null)
+              ).then(async (res) => {
+                if (
+                  res.error &&
+                  /deleted_at/i.test(res.error.message || "")
+                ) {
+                  return safesOrderQuery(
+                    supabase.from("safes").select("*").eq("is_active", true)
+                  );
+                }
+                return res;
+              })
             : Promise.resolve({ data: [] as Safe[], error: null }),
           canTreasury
             ? supabase
@@ -407,16 +421,47 @@ export default function MobileFinancePage() {
   const selectedSafeId = transferPick.fromId;
   const selectedToSafeId = transferPick.toId;
 
-  function openSheet(kind: SheetKind) {
+  async function openSheet(kind: SheetKind) {
     setError("");
     setAmount("");
     setDescription("");
     setPartyId("");
     if (kind === "transfer") {
+      // Prefer live server ids right before transfer — avoids offline ghosts.
+      if (typeof navigator === "undefined" || navigator.onLine !== false) {
+        try {
+          let res = await safesOrderQuery(
+            supabase
+              .from("safes")
+              .select("*")
+              .eq("is_active", true)
+              .is("deleted_at", null)
+          );
+          if (res.error && /deleted_at/i.test(res.error.message || "")) {
+            res = await safesOrderQuery(
+              supabase.from("safes").select("*").eq("is_active", true)
+            );
+          }
+          if (!res.error && res.data?.length) {
+            const live = normalizeActiveSafes(res.data as Safe[]);
+            setSafes(live);
+            const next = resolveTransferSafeIds(live, safeId, toSafeId);
+            setSafeId(next.fromId);
+            setToSafeId(next.toId);
+            setSheet(kind);
+            return;
+          }
+        } catch {
+          /* fall through to local list */
+        }
+      }
       const next = resolveTransferSafeIds(safes, safeId, toSafeId);
       setSafeId(next.fromId);
       setToSafeId(next.toId);
-    } else if (safes.length && !safes.some((s) => String(s.id) === String(safeId))) {
+    } else if (
+      safes.length &&
+      !safes.some((s) => String(s.id) === String(safeId))
+    ) {
       setSafeId(String(safes[0].id));
     }
     setSheet(kind);
@@ -443,11 +488,19 @@ export default function MobileFinancePage() {
         if (!selectedSafeId || !selectedToSafeId) {
           throw new Error("يلزم خزنتان على الأقل للتحويل");
         }
+        const fromSafe = safes.find(
+          (s) => String(s.id) === String(selectedSafeId)
+        );
+        const toSafe = safes.find(
+          (s) => String(s.id) === String(selectedToSafeId)
+        );
         await transferBetweenSafes(supabase, {
           fromSafeId: selectedSafeId,
           toSafeId: selectedToSafeId,
           amount: value,
           description: description || "تحويل بين الخزائن",
+          fromSafeName: fromSafe?.name,
+          toSafeName: toSafe?.name,
         });
       } else if (sheet === "expense") {
         if (!canExpenses) throw new Error("لا تملك صلاحية المصروفات");
@@ -796,47 +849,69 @@ export default function MobileFinancePage() {
               <label>
                 {sheet === "transfer" ? "من خزنة" : "الخزنة"}
               </label>
-              <select
-                value={selectedSafeId}
-                onChange={(e) => {
-                  const nextFrom = e.target.value;
-                  setSafeId(nextFrom);
-                  if (sheet === "transfer") {
-                    const next = resolveTransferSafeIds(
-                      safes,
-                      nextFrom,
-                      toSafeId
+              {sheet === "transfer" ? (
+                <div className="mobile-chip-row" style={{ flexWrap: "wrap" }}>
+                  {safes.map((s) => {
+                    const id = String(s.id);
+                    const active = id === String(selectedSafeId);
+                    return (
+                      <MobileChip
+                        key={`from-${id}`}
+                        active={active}
+                        onClick={() => {
+                          setSafeId(id);
+                          const next = resolveTransferSafeIds(
+                            safes,
+                            id,
+                            toSafeId
+                          );
+                          setToSafeId(next.toId);
+                        }}
+                      >
+                        {s.name}
+                      </MobileChip>
                     );
-                    setToSafeId(next.toId);
-                  }
-                }}
-              >
-                {safes.map((s) => (
-                  <option key={String(s.id)} value={String(s.id)}>
-                    {s.name} ({formatCurrency(Number(s.balance))})
-                  </option>
-                ))}
-              </select>
+                  })}
+                </div>
+              ) : (
+                <select
+                  value={selectedSafeId}
+                  onChange={(e) => setSafeId(e.target.value)}
+                >
+                  {safes.map((s) => (
+                    <option key={String(s.id)} value={String(s.id)}>
+                      {s.name} ({formatCurrency(Number(s.balance))})
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             {sheet === "transfer" && (
               <div className="mobile-field">
                 <label>إلى خزنة</label>
-                <select
-                  value={selectedToSafeId}
-                  onChange={(e) => setToSafeId(e.target.value)}
-                >
-                  <option value="" disabled>
-                    اختر الوجهة
-                  </option>
+                <div className="mobile-chip-row" style={{ flexWrap: "wrap" }}>
                   {safes
                     .filter((s) => String(s.id) !== String(selectedSafeId))
-                    .map((s) => (
-                      <option key={String(s.id)} value={String(s.id)}>
-                        {s.name} ({formatCurrency(Number(s.balance))})
-                      </option>
-                    ))}
-                </select>
+                    .map((s) => {
+                      const id = String(s.id);
+                      const active = id === String(selectedToSafeId);
+                      return (
+                        <MobileChip
+                          key={`to-${id}`}
+                          active={active}
+                          onClick={() => setToSafeId(id)}
+                        >
+                          {s.name} ({formatCurrency(Number(s.balance))})
+                        </MobileChip>
+                      );
+                    })}
+                </div>
+                {!selectedToSafeId ? (
+                  <p className="mt-2 text-xs font-semibold text-[var(--danger)]">
+                    اختر خزنة الوجهة
+                  </p>
+                ) : null}
               </div>
             )}
 

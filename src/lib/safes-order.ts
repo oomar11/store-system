@@ -38,15 +38,19 @@ export function normalizeActiveSafes<T extends SafeLike>(
     if (!row?.id) continue;
     // Treat only explicit false as inactive; missing means active for older rows.
     if (row.is_active === false) continue;
+    // Soft-deleted rows from local-first sync must not appear in pickers.
+    const deletedAt = (row as { deleted_at?: string | null }).deleted_at;
+    if (deletedAt) continue;
     byId.set(String(row.id), row);
   }
 
   // Collapse sync ghosts that kept the same display name under a dead id.
+  // Prefer the newest row (updated_at/created_at) — NOT higher balance —
+  // because offline ghosts often keep a stale inflated balance.
   const byName = new Map<string, T>();
   for (const row of byId.values()) {
     const key = normalizeSafeNameKey(row.name);
     if (!key) {
-      // Keep unnamed rows keyed by id so we don't drop everything.
       byName.set(`__id:${row.id}`, row);
       continue;
     }
@@ -55,15 +59,31 @@ export function normalizeActiveSafes<T extends SafeLike>(
       byName.set(key, row);
       continue;
     }
-    const prevBal = Math.abs(Number(prev.balance) || 0);
-    const nextBal = Math.abs(Number(row.balance) || 0);
-    // Prefer the row with the larger absolute balance (live vault),
-    // then the one marked explicitly active.
-    if (nextBal > prevBal) {
+    const prevTs =
+      Date.parse(
+        String(
+          (prev as { updated_at?: string; created_at?: string }).updated_at ||
+            (prev as { created_at?: string }).created_at ||
+            ""
+        )
+      ) || 0;
+    const nextTs =
+      Date.parse(
+        String(
+          (row as { updated_at?: string; created_at?: string }).updated_at ||
+            (row as { created_at?: string }).created_at ||
+            ""
+        )
+      ) || 0;
+    if (nextTs > prevTs) {
       byName.set(key, row);
       continue;
     }
-    if (nextBal === prevBal && row.is_active === true && prev.is_active !== true) {
+    if (
+      nextTs === prevTs &&
+      row.is_active === true &&
+      prev.is_active !== true
+    ) {
       byName.set(key, row);
     }
   }
