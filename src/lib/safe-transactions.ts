@@ -180,13 +180,34 @@ export async function transferBetweenSafes(
 
   const fromSafeId = fromRow.id;
   const toSafeId = toRow.id;
+  const fromSafeName =
+    params.fromSafeName?.trim() || fromRow.name || null;
+  const toSafeName = params.toSafeName?.trim() || toRow.name || null;
 
-  const { error } = await supabase.rpc("transfer_between_safes", {
+  // Prefer 6-arg RPC (name fallback inside Postgres). Fall back to 4-arg
+  // when migration 20260814 is not applied yet.
+  let { error } = await supabase.rpc("transfer_between_safes", {
     p_from_safe_id: fromSafeId,
     p_to_safe_id: toSafeId,
     p_amount: amount,
     p_description: params.description || null,
+    p_from_safe_name: fromSafeName,
+    p_to_safe_name: toSafeName,
   });
+
+  if (
+    error &&
+    /p_from_safe_name|p_to_safe_name|Could not find the function|function public\.transfer_between_safes/i.test(
+      error.message || ""
+    )
+  ) {
+    ({ error } = await supabase.rpc("transfer_between_safes", {
+      p_from_safe_id: fromSafeId,
+      p_to_safe_id: toSafeId,
+      p_amount: amount,
+      p_description: params.description || null,
+    }));
+  }
 
   if (error) {
     throw new Error(error.message || "تعذر إتمام التحويل بين الخزائن");

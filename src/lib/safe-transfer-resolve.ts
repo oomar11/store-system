@@ -17,6 +17,33 @@ export function normalizeSafeNameKey(name: string): string {
     .toLowerCase();
 }
 
+/**
+ * Loose match for vault labels used in the wild:
+ * «المحل» ↔ «خزنة المحل», «الرئيسيه» ↔ «الخزنه الرئيسيه».
+ */
+export function safeNamesLooselyMatch(
+  a: string | null | undefined,
+  b: string | null | undefined
+): boolean {
+  const ka = normalizeSafeNameKey(a || "");
+  const kb = normalizeSafeNameKey(b || "");
+  if (!ka || !kb) return false;
+  if (ka === kb) return true;
+
+  const stripVaultPrefix = (k: string) =>
+    k.replace(/^الخزنه\s+/, "").replace(/^خزنه\s+/, "").trim();
+  const sa = stripVaultPrefix(ka);
+  const sb = stripVaultPrefix(kb);
+  if (sa && sb && (sa === sb || sa === kb || sb === ka)) return true;
+
+  // Containment only when the shorter meaningful token is long enough
+  // to avoid matching everything on «خزنه».
+  const shorter = sa.length <= sb.length ? sa : sb;
+  const longer = sa.length <= sb.length ? sb : sa;
+  if (shorter.length >= 3 && longer.includes(shorter)) return true;
+  return false;
+}
+
 export type TransferSafeRow = {
   id: string;
   name: string;
@@ -24,6 +51,24 @@ export type TransferSafeRow = {
   balance?: number;
   deleted_at?: string | null;
 };
+
+function rankLiveSafe(row: TransferSafeRow): number {
+  let score = 0;
+  if (!row.deleted_at) score += 2;
+  if (row.is_active !== false) score += 1;
+  return score;
+}
+
+function pickBestNameMatch(
+  pool: TransferSafeRow[],
+  preferredName?: string | null
+): TransferSafeRow | null {
+  const matches = pool.filter((s) =>
+    safeNamesLooselyMatch(s.name, preferredName)
+  );
+  if (!matches.length) return null;
+  return matches.sort((a, b) => rankLiveSafe(b) - rankLiveSafe(a))[0] || null;
+}
 
 export function pickLiveSafe(
   live: TransferSafeRow[],
@@ -35,21 +80,21 @@ export function pickLiveSafe(
     ? live.filter((s) => !sameSafeId(s.id, excludeId))
     : live;
   const id = String(preferredId || "").trim();
-  if (id) {
-    const byId = pool.find((s) => sameSafeId(s.id, id));
-    if (byId) return byId;
+  const byId = id ? pool.find((s) => sameSafeId(s.id, id)) : undefined;
+
+  // If an id hits but the provided label clearly names another vault,
+  // prefer the name (fixes ghost ids that still exist as soft leftovers).
+  if (byId) {
+    if (
+      !preferredName ||
+      safeNamesLooselyMatch(byId.name, preferredName) ||
+      !pickBestNameMatch(pool, preferredName)
+    ) {
+      return byId;
+    }
   }
-  const key = normalizeSafeNameKey(preferredName || "");
-  if (!key) return null;
-  const matches = pool.filter(
-    (s) => normalizeSafeNameKey(s.name) === key
-  );
-  return (
-    matches.find((s) => !s.deleted_at && s.is_active !== false) ||
-    matches.find((s) => !s.deleted_at) ||
-    matches[0] ||
-    null
-  );
+
+  return pickBestNameMatch(pool, preferredName);
 }
 
 /**
