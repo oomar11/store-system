@@ -27,12 +27,17 @@ export async function OPTIONS() {
 
 /** List active safes for workshop bridge setup. */
 export async function GET(request: NextRequest) {
-  if (!(await isWorkshopBridgeConfigured())) {
+  const configured = await isWorkshopBridgeConfigured();
+  if (!configured) {
+    // Temporary diagnostics to debug production misconfig (remove after fix verified)
+    const { diagnoseWorkshopBridge } = await import("@/lib/workshop-bridge");
+    const diag = await diagnoseWorkshopBridge();
     return withCors(
       NextResponse.json(
         {
           error: "جسر الورشة غير مضبوط — أضف المفتاح في workshop_bridge_config أو WORKSHOP_BRIDGE_SECRET",
           configured: false,
+          diag,
         },
         { status: 503 }
       )
