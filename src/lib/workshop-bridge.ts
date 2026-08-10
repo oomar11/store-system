@@ -5,14 +5,31 @@ import { tryCreateServiceClient } from "@/lib/supabase-service";
 
 const BRIDGE_CONFIG_ID = "c0000000-0000-0000-0000-000000000001";
 
+/** Known leaked secrets — never accept even if still present in env/DB. */
+const REVOKED_BRIDGE_SECRETS = new Set([
+  "windoor-workshop-bridge-2026-rho",
+]);
+
 let cachedDbSecret: string | null | undefined;
 
+function sanitizeBridgeSecret(raw: string): string {
+  const secret = raw.trim();
+  if (!secret) return "";
+  if (REVOKED_BRIDGE_SECRETS.has(secret)) return "";
+  return secret;
+}
+
 function envWorkshopBridgeSecret(): string {
-  return (
-    process.env.WORKSHOP_BRIDGE_SECRET?.trim() ||
-    process.env.STORE_WORKSHOP_BRIDGE_SECRET?.trim() ||
-    ""
+  return sanitizeBridgeSecret(
+    process.env.WORKSHOP_BRIDGE_SECRET ||
+      process.env.STORE_WORKSHOP_BRIDGE_SECRET ||
+      ""
   );
+}
+
+/** Clear process cache after rotating WORKSHOP_BRIDGE_SECRET / DB row. */
+export function clearWorkshopBridgeSecretCache() {
+  cachedDbSecret = undefined;
 }
 
 /** Resolve bridge secret: Vercel env first, then workshop_bridge_config row. */
@@ -33,7 +50,7 @@ export async function resolveWorkshopBridgeSecret(): Promise<string> {
       .select("bridge_secret")
       .eq("id", BRIDGE_CONFIG_ID)
       .maybeSingle();
-    const secret = String(data?.bridge_secret || "").trim();
+    const secret = sanitizeBridgeSecret(String(data?.bridge_secret || ""));
     cachedDbSecret = secret || null;
     return secret;
   } catch (e) {

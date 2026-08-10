@@ -428,6 +428,7 @@ export async function buildUnifiedCustomerStatement(
 
   for (const inv of salesRes.data || []) {
     const total = Number(inv.total) || 0;
+    const paid = Math.max(0, Number(inv.paid_amount) || 0);
     const isReturn = inv.type === "sale_return";
     rows.push({
       id: `inv-${inv.id}`,
@@ -440,6 +441,20 @@ export async function buildUnifiedCustomerStatement(
       credit: isReturn ? total : 0,
       notes: inv.notes || null,
     });
+    // Cash/partial paid on the invoice itself (not in party_payments)
+    if (paid >= 0.0005) {
+      rows.push({
+        id: `inv-paid-${inv.id}`,
+        occurred_at: inv.created_at,
+        source: "store",
+        kind: isReturn ? "return_refund" : "invoice_payment",
+        label: isReturn ? "استرداد مع المرتجع" : "مدفوع مع الفاتورة",
+        reference: inv.invoice_number,
+        debit: isReturn ? paid : 0,
+        credit: isReturn ? 0 : paid,
+        notes: null,
+      });
+    }
   }
 
   for (const pay of paysRes.data || []) {
@@ -522,6 +537,7 @@ export async function buildUnifiedCustomerStatement(
 
     for (const inv of purchRes.data || []) {
       const total = Number(inv.total) || 0;
+      const paid = Math.max(0, Number(inv.paid_amount) || 0);
       const isReturn = inv.type === "purchase_return";
       // On unified net view: purchase (we owe) is credit to net "لنا/علينا" from customer perspective
       // Customer view of linked supplier: purchase increases what we owe them → treat as credit against customer net
@@ -536,6 +552,19 @@ export async function buildUnifiedCustomerStatement(
         credit: isReturn ? 0 : total,
         notes: inv.notes || null,
       });
+      if (paid >= 0.0005) {
+        rows.push({
+          id: `pinv-paid-${inv.id}`,
+          occurred_at: inv.created_at,
+          source: "store",
+          kind: isReturn ? "return_refund" : "invoice_payment",
+          label: isReturn ? "استرداد مع مرتجع الشراء" : "مدفوع مع فاتورة الشراء",
+          reference: inv.invoice_number,
+          debit: isReturn ? 0 : paid,
+          credit: isReturn ? paid : 0,
+          notes: null,
+        });
+      }
     }
 
     for (const pay of suppPayRes.data || []) {
