@@ -190,7 +190,7 @@ export default function MobileHomePage() {
               ? supabase
                   .from("invoices")
                   .select(
-                    "id, invoice_number, type, total, paid_amount, created_at, customer:customers(name), supplier:suppliers(name)"
+                    "id, invoice_number, type, total, paid_amount, created_at, customer_id, supplier_id"
                   )
                   .in("type", [
                     "sale",
@@ -201,7 +201,7 @@ export default function MobileHomePage() {
                   .order("created_at", { ascending: false })
                   .limit(12)
               : Promise.resolve({
-                  data: [] as RecentInvoice[],
+                  data: [] as Array<Record<string, unknown>>,
                   error: null,
                 }),
           ]),
@@ -225,6 +225,51 @@ export default function MobileHomePage() {
           notify_low_stock?: boolean | null;
         }>;
 
+        const recentRaw = (recentRes.data || []) as Array<{
+          id: string;
+          invoice_number: string;
+          type: string;
+          total: number;
+          paid_amount: number;
+          created_at: string;
+          customer_id?: string | null;
+          supplier_id?: string | null;
+        }>;
+        const customerIds = Array.from(
+          new Set(
+            recentRaw
+              .map((r) => r.customer_id)
+              .filter((id): id is string => Boolean(id))
+          )
+        );
+        const supplierIds = Array.from(
+          new Set(
+            recentRaw
+              .map((r) => r.supplier_id)
+              .filter((id): id is string => Boolean(id))
+          )
+        );
+        const nameByCustomer = new Map<string, string>();
+        const nameBySupplier = new Map<string, string>();
+        if (customerIds.length) {
+          const { data } = await supabase
+            .from("customers")
+            .select("id, name")
+            .in("id", customerIds);
+          for (const c of data || []) {
+            nameByCustomer.set(String(c.id), String(c.name || ""));
+          }
+        }
+        if (supplierIds.length) {
+          const { data } = await supabase
+            .from("suppliers")
+            .select("id, name")
+            .in("id", supplierIds);
+          for (const s of data || []) {
+            nameBySupplier.set(String(s.id), String(s.name || ""));
+          }
+        }
+
         return {
           todaySales: salesRows.reduce((s, r) => s + Number(r.total || 0), 0),
           todayCount: salesRows.length,
@@ -236,7 +281,20 @@ export default function MobileHomePage() {
             )
           ).length,
           safes: normalizeActiveSafes((safesRes.data || []) as Safe[]),
-          recent: (recentRes.data || []) as unknown as RecentInvoice[],
+          recent: recentRaw.map((inv) => ({
+            id: inv.id,
+            invoice_number: inv.invoice_number,
+            type: inv.type,
+            total: inv.total,
+            paid_amount: inv.paid_amount,
+            created_at: inv.created_at,
+            customer: inv.customer_id
+              ? { name: nameByCustomer.get(inv.customer_id) || "—" }
+              : null,
+            supplier: inv.supplier_id
+              ? { name: nameBySupplier.get(inv.supplier_id) || "—" }
+              : null,
+          })),
         };
       },
       apply: (data) =>

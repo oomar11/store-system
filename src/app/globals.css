@@ -1117,6 +1117,43 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator,
   padding-bottom: calc(var(--mobile-nav-h) + env(safe-area-inset-bottom, 0px));
 }
 
+.mobile-landscape-blocker {
+  display: none;
+}
+
+@media screen and (orientation: landscape) and (max-height: 520px) {
+  html.mobile-portrait-lock .mobile-landscape-blocker {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 24px;
+    text-align: center;
+    background: var(--background);
+    color: var(--foreground);
+  }
+
+  html.mobile-portrait-lock .mobile-landscape-blocker p {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 800;
+  }
+
+  html.mobile-portrait-lock .mobile-landscape-blocker span {
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+
+  html.mobile-portrait-lock .mobile-app__inner,
+  html.mobile-portrait-lock .mobile-bottom-nav {
+    visibility: hidden;
+  }
+}
+
 .mobile-app__inner {
   min-height: calc(100dvh - var(--mobile-nav-h) - env(safe-area-inset-bottom, 0px));
 }
