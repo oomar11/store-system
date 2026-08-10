@@ -1,5 +1,11 @@
 "use client";
 
+/**
+ * Mobile finance — rebuilt clean.
+ * Transfer mirrors desktop: pick two vaults by live server ids + names,
+ * then POST /api/treasury/transfer (service-role path on the server).
+ */
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeftRight,
@@ -27,11 +33,7 @@ import {
   getSnapshot,
   listActiveEntities,
 } from "@/lib/offline";
-import {
-  normalizeActiveSafes,
-  resolveTransferSafeIds,
-  safesOrderQuery,
-} from "@/lib/safes-order";
+import { normalizeActiveSafes, safesOrderQuery } from "@/lib/safes-order";
 import { formatCurrency, formatDateShort } from "@/lib/utils";
 import { MobileHeader } from "@/components/mobile/MobileHeader";
 import {
@@ -53,16 +55,69 @@ type SheetKind =
   | "pay_supplier"
   | null;
 
+type TxRow = {
+  id: string;
+  type: string;
+  amount: number;
+  description: string | null;
+  created_at: string;
+  safeName: string;
+};
+
+type TransferSafe = {
+  id: string;
+  name: string;
+  balance: number;
+  tag: "" | "deleted" | "inactive";
+};
+
 const TX_TYPE_LABELS: Record<string, string> = {
   deposit: "إيداع",
   withdrawal: "سحب",
   transfer: "تحويل",
 };
 
+function sheetTitle(sheet: SheetKind): string {
+  switch (sheet) {
+    case "deposit":
+      return "إيداع نقدي";
+    case "withdraw":
+      return "سحب نقدي";
+    case "transfer":
+      return "تحويل بين الخزائن";
+    case "expense":
+      return "تسجيل مصروف";
+    case "collect":
+      return "تحصيل من عميل";
+    case "pay_supplier":
+      return "سداد لمورد";
+    default:
+      return "";
+  }
+}
+
+function asSafe(row: {
+  id: string;
+  name: string;
+  balance: number;
+  is_active?: boolean;
+  sort_order?: number | null;
+}): Safe {
+  return {
+    id: row.id,
+    name: row.name,
+    balance: row.balance,
+    is_active: row.is_active !== false,
+    sort_order: row.sort_order ?? undefined,
+    created_at: "",
+  } as Safe;
+}
+
 export default function MobileFinancePage() {
   const supabase = useMemo(() => createClient(), []);
   const { profile, loading: authLoading } = useAuth();
   const subject = profileSubject(profile);
+
   const canTreasury = canAccess(subject, "treasury");
   const canExpenses = canAccess(subject, "expenses");
   const canCustomers =
@@ -73,28 +128,15 @@ export default function MobileFinancePage() {
     canAccess(subject, "suppliers") || canAccess(subject, "treasury");
 
   const [loading, setLoading] = useState(true);
+  const [feedError, setFeedError] = useState("");
   const [safes, setSafes] = useState<Safe[]>([]);
+  const [txRows, setTxRows] = useState<TxRow[]>([]);
   const [expenses, setExpenses] = useState<ExpenseListItem[]>([]);
   const [expenseAccounts, setExpenseAccounts] = useState<Account[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [feedError, setFeedError] = useState("");
-  const [txRows, setTxRows] = useState<
-    {
-      id: string;
-      type: string;
-      amount: number;
-      description: string | null;
-      created_at: string;
-      safe?: { name?: string };
-    }[]
-  >([]);
 
-  const [sheet, setSheet] = useState<SheetKind>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
   const [feed, setFeed] = useState<"tx" | "expenses">("tx");
-
   const activeFeed: "tx" | "expenses" =
     feed === "expenses" && canExpenses
       ? "expenses"
@@ -102,91 +144,48 @@ export default function MobileFinancePage() {
         ? "tx"
         : "expenses";
 
+  const [sheet, setSheet] = useState<SheetKind>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
   const [safeId, setSafeId] = useState("");
-  const [toSafeId, setToSafeId] = useState("");
   const [expenseAccountId, setExpenseAccountId] = useState("");
   const [partyId, setPartyId] = useState("");
-  const [transferStatusById, setTransferStatusById] = useState<
-    Record<string, "deleted" | "inactive" | "">
-  >({});
+
+  // Transfer-only state — never mixed with offline/display safes.
+  const [transferSafes, setTransferSafes] = useState<TransferSafe[]>([]);
+  const [fromSafeId, setFromSafeId] = useState("");
+  const [toSafeId, setToSafeId] = useState("");
 
   const load = useCallback(async () => {
-    // Do NOT gate on OfflineProvider probe — it often marks the app offline
-    // while Supabase still works, which left "آخر الحركات" stuck on empty IDB.
     const browserOffline =
       typeof navigator !== "undefined" && navigator.onLine === false;
     setFeedError("");
 
-    function mapLocalSafes(
-      rows: Array<{
-        id: string;
-        name: string;
-        balance: number;
-        is_active?: boolean;
-        sort_order?: number | null;
-      }>
-    ): Safe[] {
-      return normalizeActiveSafes(
-        rows.map(
-          (s) =>
-            ({
-              id: s.id,
-              name: s.name,
-              balance: s.balance,
-              is_active: s.is_active !== false,
-              sort_order: s.sort_order ?? undefined,
-              created_at: "",
-            }) as Safe
-        ),
-        { dedupeByName: true }
-      );
-    }
-
-    async function loadTxFromLocal(safeNameById: Map<string, string>) {
-      if (!canTreasury) {
-        setTxRows([]);
-        return;
-      }
-      const txs = await listActiveEntities("safe_transactions");
-      const rows = txs
-        .map((t) => ({
-          id: String(t.id),
-          type: String(t.type || ""),
-          amount: Number(t.amount) || 0,
-          description:
-            (t.description as string | null) ||
-            (t.notes as string | null) ||
-            null,
-          created_at: String(t.created_at || ""),
-          safe: {
-            name: safeNameById.get(String(t.safe_id)) || "خزنة",
-          },
-        }))
-        .filter((t) => t.id && t.created_at)
-        .sort(
-          (a, b) =>
-            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-        )
-        .slice(0, 40);
-      setTxRows(rows);
-    }
-
-    async function loadLocalFallback(message?: string) {
-      if (message) setFeedError(message);
+    async function loadLocal() {
       const snap = await getSnapshot();
-      const localSafes = canTreasury ? mapLocalSafes(snap?.safes || []) : [];
+      const localSafes = canTreasury
+        ? normalizeActiveSafes(
+            (snap?.safes || []).map((s) =>
+              asSafe({
+                id: String(s.id),
+                name: String(s.name || ""),
+                balance: Number(s.balance) || 0,
+                is_active: s.is_active !== false,
+                sort_order: s.sort_order ?? null,
+              })
+            ),
+            { dedupeByName: true }
+          )
+        : [];
       if (localSafes.length) {
         setSafes(localSafes);
-        setSafeId((prevFrom) => {
-          const resolved = resolveTransferSafeIds(localSafes, prevFrom, null);
-          setToSafeId((prevTo) =>
-            resolveTransferSafeIds(localSafes, resolved.fromId, prevTo).toId
-          );
-          return resolved.fromId;
-        });
+        setSafeId((prev) =>
+          localSafes.some((s) => s.id === prev) ? prev : localSafes[0].id
+        );
       }
+
       if (canCustomers) {
         setCustomers(
           (snap?.customers || [])
@@ -198,6 +197,7 @@ export default function MobileFinancePage() {
                   name: c.name,
                   phone: c.phone || undefined,
                   balance: c.balance,
+                  is_active: true,
                   created_at: "",
                 }) as Customer
             )
@@ -214,32 +214,50 @@ export default function MobileFinancePage() {
                   name: s.name,
                   phone: s.phone || undefined,
                   balance: s.balance,
+                  is_active: true,
                   created_at: "",
                 }) as Supplier
             )
         );
       }
-      const nameById = new Map(
-        localSafes.map((s) => [s.id, s.name] as const)
-      );
-      await loadTxFromLocal(nameById);
-      if (canExpenses) {
-        try {
-          const { listExpensesLocal } = await import("@/lib/offline");
-          setExpenses(await listExpensesLocal(20));
-        } catch {
-          setExpenses([]);
-        }
+
+      if (canTreasury) {
+        const nameById = new Map(
+          localSafes.map((s) => [s.id, s.name] as const)
+        );
+        const txs = await listActiveEntities("safe_transactions");
+        setTxRows(
+          txs
+            .map((t) => ({
+              id: String(t.id),
+              type: String(t.type || ""),
+              amount: Number(t.amount) || 0,
+              description:
+                (t.description as string | null) ||
+                (t.notes as string | null) ||
+                null,
+              created_at: String(t.created_at || ""),
+              safeName: nameById.get(String(t.safe_id)) || "خزنة",
+            }))
+            .filter((t) => t.id && t.created_at)
+            .sort(
+              (a, b) =>
+                new Date(b.created_at).getTime() -
+                new Date(a.created_at).getTime()
+            )
+            .slice(0, 40)
+        );
+      } else {
+        setTxRows([]);
       }
     }
 
     if (browserOffline) {
-      await loadLocalFallback("أنت غير متصل — عرض البيانات المحلية");
+      setFeedError("أنت غير متصل — عرض البيانات المحلية");
+      await loadLocal();
       return;
     }
 
-    // Online: browser Supabase session (same auth as the rest of the app).
-    // Avoid fragile PostgREST multi-FK embeds and cookie-only API routes.
     try {
       const [safesRes, txRes, expenseTxRes, custRes, suppRes] =
         await Promise.all([
@@ -251,10 +269,7 @@ export default function MobileFinancePage() {
                   .eq("is_active", true)
                   .is("deleted_at", null)
               ).then(async (res) => {
-                if (
-                  res.error &&
-                  /deleted_at/i.test(res.error.message || "")
-                ) {
+                if (res.error && /deleted_at/i.test(res.error.message || "")) {
                   return safesOrderQuery(
                     supabase.from("safes").select("*").eq("is_active", true)
                   );
@@ -311,13 +326,9 @@ export default function MobileFinancePage() {
         dedupeByName: false,
       });
       setSafes(nextSafes);
-      setSafeId((prevFrom) => {
-        const resolved = resolveTransferSafeIds(nextSafes, prevFrom, null);
-        setToSafeId((prevTo) =>
-          resolveTransferSafeIds(nextSafes, resolved.fromId, prevTo).toId
-        );
-        return resolved.fromId;
-      });
+      setSafeId((prev) =>
+        nextSafes.some((s) => s.id === prev) ? prev : nextSafes[0]?.id || ""
+      );
 
       const nameById = new Map(
         nextSafes.map((s) => [String(s.id), String(s.name || "خزنة")] as const)
@@ -332,7 +343,6 @@ export default function MobileFinancePage() {
         created_at: string;
         safe_id: string | null;
       }>;
-
       setTxRows(
         txData
           .filter((t) => t.id)
@@ -342,9 +352,7 @@ export default function MobileFinancePage() {
             amount: Number(t.amount) || 0,
             description: t.description || t.notes || null,
             created_at: t.created_at || new Date().toISOString(),
-            safe: {
-              name: nameById.get(String(t.safe_id)) || "خزنة",
-            },
+            safeName: nameById.get(String(t.safe_id)) || "خزنة",
           }))
       );
 
@@ -393,10 +401,11 @@ export default function MobileFinancePage() {
       setSuppliers((suppRes.data || []) as Supplier[]);
       setFeedError("");
     } catch (err) {
-      console.warn("[mobile/finance] network load failed", err);
-      await loadLocalFallback(
+      console.warn("[mobile/finance] load failed", err);
+      setFeedError(
         err instanceof Error ? err.message : "تعذر تحميل آخر الحركات"
       );
+      await loadLocal();
     }
   }, [
     canCustomers,
@@ -408,7 +417,6 @@ export default function MobileFinancePage() {
 
   useEffect(() => {
     if (authLoading) return;
-
     let cancelled = false;
     (async () => {
       setLoading(true);
@@ -423,55 +431,45 @@ export default function MobileFinancePage() {
     };
   }, [authLoading, load]);
 
-  const transferPick = resolveTransferSafeIds(safes, safeId, toSafeId);
-  const selectedSafeId = transferPick.fromId;
-  const selectedToSafeId = transferPick.toId;
-
-  async function openSheet(kind: SheetKind) {
+  function resetSheetFields() {
     setError("");
     setAmount("");
     setDescription("");
     setPartyId("");
+    setTransferSafes([]);
+    setFromSafeId("");
+    setToSafeId("");
+  }
+
+  async function openSheet(kind: SheetKind) {
+    resetSheetFields();
+
     if (kind === "transfer") {
-      // Transfer pickers must use authoritative server ids only.
       if (typeof navigator !== "undefined" && navigator.onLine === false) {
         setFeedError("التحويل بين الخزائن يحتاج اتصال بالإنترنت");
         return;
       }
       try {
         const live = await fetchSafesForTransfer(supabase);
-        // Match desktop treasury: every server vault is selectable for transfer,
-        // including inactive / soft-deleted (RPC only needs the row to exist).
         if (live.length < 2) {
           setFeedError("يلزم خزنتان على الأقل للتحويل");
           return;
         }
         setFeedError("");
-        const status: Record<string, "deleted" | "inactive" | ""> = {};
-        for (const s of live) {
-          status[s.id] = s.deleted_at
+        const list: TransferSafe[] = live.map((s) => ({
+          id: String(s.id),
+          name: String(s.name || ""),
+          balance: Number(s.balance) || 0,
+          tag: s.deleted_at
             ? "deleted"
             : s.is_active === false
               ? "inactive"
-              : "";
-        }
-        setTransferStatusById(status);
-        setSafes(
-          live.map(
-            (s) =>
-              ({
-                id: s.id,
-                name: s.name,
-                balance: s.balance,
-                is_active: true,
-                created_at: "",
-              }) as Safe
-          )
-        );
-        const next = resolveTransferSafeIds(live, safeId, toSafeId);
-        setSafeId(next.fromId);
-        setToSafeId(next.toId);
-        setSheet(kind);
+              : "",
+        }));
+        setTransferSafes(list);
+        setFromSafeId(list[0].id);
+        setToSafeId(list[1].id);
+        setSheet("transfer");
         return;
       } catch (e) {
         setFeedError(
@@ -479,11 +477,10 @@ export default function MobileFinancePage() {
         );
         return;
       }
-    } else if (
-      safes.length &&
-      !safes.some((s) => String(s.id) === String(safeId))
-    ) {
-      setSafeId(String(safes[0].id));
+    }
+
+    if (safes.length && !safes.some((s) => s.id === safeId)) {
+      setSafeId(safes[0].id);
     }
     setSheet(kind);
   }
@@ -497,39 +494,37 @@ export default function MobileFinancePage() {
 
       if (sheet === "deposit" || sheet === "withdraw") {
         if (!canTreasury) throw new Error("لا تملك صلاحية الخزينة");
-        if (!selectedSafeId) throw new Error("اختر خزنة");
+        if (!safeId) throw new Error("اختر خزنة");
         await applySafeMovement(supabase, {
-          safeId: selectedSafeId,
+          safeId,
           type: sheet === "deposit" ? "deposit" : "withdrawal",
           amount: value,
           description: description || (sheet === "deposit" ? "إيداع" : "سحب"),
         });
       } else if (sheet === "transfer") {
         if (!canTreasury) throw new Error("لا تملك صلاحية الخزينة");
-        if (!selectedSafeId || !selectedToSafeId) {
-          throw new Error("يلزم خزنتان على الأقل للتحويل");
+        if (!fromSafeId || !toSafeId) {
+          throw new Error("اختر خزنتين مختلفتين للتحويل");
         }
-        const fromSafe = safes.find(
-          (s) => String(s.id) === String(selectedSafeId)
-        );
-        const toSafe = safes.find(
-          (s) => String(s.id) === String(selectedToSafeId)
-        );
+        if (fromSafeId === toSafeId) {
+          throw new Error("اختر خزنتين مختلفتين للتحويل");
+        }
+        const fromSafe = transferSafes.find((s) => s.id === fromSafeId);
+        const toSafe = transferSafes.find((s) => s.id === toSafeId);
+        if (!fromSafe || !toSafe) {
+          throw new Error("حدّث الصفحة واختر الخزائن من جديد");
+        }
+
         const res = await fetch("/api/treasury/transfer", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Cache-Control": "no-store",
-          },
-          cache: "no-store",
+          headers: { "Content-Type": "application/json" },
           credentials: "same-origin",
+          cache: "no-store",
           body: JSON.stringify({
-            fromSafeId: selectedSafeId,
-            toSafeId: selectedToSafeId,
-            // Always send labels — even if id lookup missed — so the API/RPC
-            // can recover «المحل» ↔ «خزنة المحل» from ghost offline ids.
-            fromSafeName: fromSafe?.name || null,
-            toSafeName: toSafe?.name || null,
+            fromSafeId: fromSafe.id,
+            toSafeId: toSafe.id,
+            fromSafeName: fromSafe.name,
+            toSafeName: toSafe.name,
             amount: value,
             description: description || "تحويل بين الخزائن",
           }),
@@ -538,39 +533,22 @@ export default function MobileFinancePage() {
           error?: string;
         };
         if (!res.ok) {
-          const msg = payload.error || "تعذر إتمام التحويل بين الخزائن";
-          // Nudge PWA update when the phone is still on a stale transfer path.
-          if (/الخزنة الهدف غير موجودة|الخزنة المصدر غير موجودة/i.test(msg)) {
-            try {
-              const reg = await navigator.serviceWorker?.getRegistration();
-              await reg?.update();
-              reg?.waiting?.postMessage({ type: "SKIP_WAITING" });
-            } catch {
-              /* ignore */
-            }
-          }
-          throw new Error(msg);
+          throw new Error(payload.error || "تعذر إتمام التحويل بين الخزائن");
         }
       } else if (sheet === "expense") {
         if (!canExpenses) throw new Error("لا تملك صلاحية المصروفات");
-        if (!selectedSafeId) throw new Error("اختر خزنة");
+        if (!safeId) throw new Error("اختر خزنة");
         const today = new Date().toISOString().slice(0, 10);
-        const { error: expErr, offline } = await createExpenseOnlineOrQueue(
-          supabase,
-          {
-            date: today,
-            amount: value,
-            description,
-            expenseAccountId,
-            safeId: selectedSafeId,
-            createdBy: profile?.id,
-            createdAt: new Date().toISOString(),
-          }
-        );
+        const { error: expErr } = await createExpenseOnlineOrQueue(supabase, {
+          date: today,
+          amount: value,
+          description,
+          expenseAccountId,
+          safeId,
+          createdBy: profile?.id,
+          createdAt: new Date().toISOString(),
+        });
         if (expErr) throw new Error(expErr);
-        if (offline) {
-          /* queued */
-        }
       } else if (sheet === "collect" || sheet === "pay_supplier") {
         const kind = sheet === "collect" ? "customer" : "supplier";
         if (kind === "customer" && !canCustomers) {
@@ -580,7 +558,7 @@ export default function MobileFinancePage() {
           throw new Error("تحصيل/سداد الأطراف غير مسموح لصلاحياتك");
         }
         if (!partyId) throw new Error("اختر الطرف");
-        if (!selectedSafeId) throw new Error("اختر خزنة");
+        if (!safeId) throw new Error("اختر خزنة");
         const party =
           kind === "customer"
             ? customers.find((c) => c.id === partyId)
@@ -591,13 +569,14 @@ export default function MobileFinancePage() {
           partyId,
           partyName: party.name,
           amount: value,
-          safeId: selectedSafeId,
+          safeId,
           notes: description,
           createdAt: new Date().toISOString(),
         });
       }
 
       setSheet(null);
+      resetSheetFields();
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "تعذر إتمام العملية");
@@ -606,7 +585,16 @@ export default function MobileFinancePage() {
     }
   }
 
-  const totalCash = safes.reduce((s, x) => s + Number(x.balance || 0), 0);
+  const totalCash = safes.reduce((sum, s) => sum + Number(s.balance || 0), 0);
+  const fromSafe = transferSafes.find((s) => s.id === fromSafeId);
+  const toSafe = transferSafes.find((s) => s.id === toSafeId);
+  const toOptions = transferSafes.filter((s) => s.id !== fromSafeId);
+
+  function safeOptionLabel(s: TransferSafe | Safe, tag?: TransferSafe["tag"]) {
+    const suffix =
+      tag === "deleted" ? " — محذوفة" : tag === "inactive" ? " — موقوفة" : "";
+    return `${s.name}${suffix} (${formatCurrency(Number(s.balance))})`;
+  }
 
   return (
     <>
@@ -638,7 +626,7 @@ export default function MobileFinancePage() {
                     <button
                       type="button"
                       className="mobile-action-card mobile-action-card--collect"
-                      onClick={() => openSheet("collect")}
+                      onClick={() => void openSheet("collect")}
                     >
                       <span className="mobile-action-card__icon" aria-hidden>
                         <HandCoins className="h-5 w-5" />
@@ -655,7 +643,7 @@ export default function MobileFinancePage() {
                     <button
                       type="button"
                       className="mobile-action-card mobile-action-card--pay"
-                      onClick={() => openSheet("pay_supplier")}
+                      onClick={() => void openSheet("pay_supplier")}
                     >
                       <span className="mobile-action-card__icon" aria-hidden>
                         <Truck className="h-5 w-5" />
@@ -678,7 +666,7 @@ export default function MobileFinancePage() {
                 <button
                   type="button"
                   className="mobile-action-card mobile-action-card--expense mobile-action-card--wide"
-                  onClick={() => openSheet("expense")}
+                  onClick={() => void openSheet("expense")}
                 >
                   <span className="mobile-action-card__icon" aria-hidden>
                     <Wallet className="h-5 w-5" />
@@ -702,7 +690,7 @@ export default function MobileFinancePage() {
                   <button
                     type="button"
                     className="mobile-action-card mobile-action-card--deposit"
-                    onClick={() => openSheet("deposit")}
+                    onClick={() => void openSheet("deposit")}
                   >
                     <span className="mobile-action-card__icon" aria-hidden>
                       <PlusCircle className="h-5 w-5" />
@@ -715,7 +703,7 @@ export default function MobileFinancePage() {
                   <button
                     type="button"
                     className="mobile-action-card mobile-action-card--withdraw"
-                    onClick={() => openSheet("withdraw")}
+                    onClick={() => void openSheet("withdraw")}
                   >
                     <span className="mobile-action-card__icon" aria-hidden>
                       <MinusCircle className="h-5 w-5" />
@@ -728,7 +716,7 @@ export default function MobileFinancePage() {
                   <button
                     type="button"
                     className="mobile-action-card mobile-action-card--transfer"
-                    onClick={() => openSheet("transfer")}
+                    onClick={() => void openSheet("transfer")}
                   >
                     <span className="mobile-action-card__icon" aria-hidden>
                       <ArrowLeftRight className="h-5 w-5" />
@@ -792,11 +780,9 @@ export default function MobileFinancePage() {
                       <MobileListRow
                         key={`tx-${t.id}`}
                         title={
-                          t.description ||
-                          TX_TYPE_LABELS[t.type] ||
-                          t.type
+                          t.description || TX_TYPE_LABELS[t.type] || t.type
                         }
-                        subtitle={`${t.safe?.name || "خزنة"} · ${formatDateShort(t.created_at)}`}
+                        subtitle={`${t.safeName} · ${formatDateShort(t.created_at)}`}
                         amount={Number(t.amount)}
                         amountTone={
                           t.type === "deposit"
@@ -830,29 +816,13 @@ export default function MobileFinancePage() {
       <MobileSheet
         open={sheet != null}
         variant="page"
-        title={
-          sheet === "deposit"
-            ? "إيداع نقدي"
-            : sheet === "withdraw"
-              ? "سحب نقدي"
-              : sheet === "transfer"
-                ? "تحويل بين الخزائن"
-                : sheet === "expense"
-                  ? "تسجيل مصروف"
-                  : sheet === "collect"
-                    ? "تحصيل من عميل"
-                    : sheet === "pay_supplier"
-                      ? "سداد لمورد"
-                      : ""
-        }
-        onClose={() => setSheet(null)}
+        title={sheetTitle(sheet)}
+        onClose={() => {
+          setSheet(null);
+          resetSheetFields();
+        }}
       >
-        {(sheet === "deposit" ||
-          sheet === "withdraw" ||
-          sheet === "transfer" ||
-          sheet === "expense" ||
-          sheet === "collect" ||
-          sheet === "pay_supplier") && (
+        {sheet ? (
           <>
             {(sheet === "collect" || sheet === "pay_supplier") && (
               <>
@@ -872,13 +842,13 @@ export default function MobileFinancePage() {
                 </div>
                 <p className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
                   {sheet === "collect"
-                    ? "تقدر تحصّل في أي وقت — لو مفيش فواتير مفتوحة المبلغ يتسجّل على حساب العميل. لو فيه رصيد افتتاحي بيتغطى قبل قفل أي فاتورة."
-                    : "تقدر تسدّد في أي وقت — لو مفيش فواتير مفتوحة المبلغ يتسجّل مقدم للمورد. لو فيه رصيد افتتاحي بيتغطى قبل قفل أي فاتورة."}
+                    ? "تقدر تحصّل في أي وقت — لو مفيش فواتير مفتوحة المبلغ يتسجّل على حساب العميل."
+                    : "تقدر تسدّد في أي وقت — لو مفيش فواتير مفتوحة المبلغ يتسجّل مقدم للمورد."}
                 </p>
               </>
             )}
 
-            {sheet === "expense" && (
+            {sheet === "expense" ? (
               <div className="mobile-field">
                 <label>حساب المصروف</label>
                 <select
@@ -892,88 +862,72 @@ export default function MobileFinancePage() {
                   ))}
                 </select>
               </div>
-            )}
+            ) : null}
 
-            <div className="mobile-field">
-              <label>
-                {sheet === "transfer" ? "من خزنة" : "الخزنة"}
-              </label>
-              <select
-                value={selectedSafeId}
-                onChange={(e) => {
-                  const nextFrom = e.target.value;
-                  setSafeId(nextFrom);
-                  if (sheet === "transfer") {
-                    const next = resolveTransferSafeIds(
-                      safes,
-                      nextFrom,
-                      toSafeId
-                    );
-                    setToSafeId(next.toId);
-                  }
-                }}
-              >
-                {safes.map((s) => {
-                  const st = transferStatusById[String(s.id)];
-                  const tag =
-                    st === "deleted"
-                      ? " — محذوفة"
-                      : st === "inactive"
-                        ? " — موقوفة"
-                        : "";
-                  return (
-                    <option key={String(s.id)} value={String(s.id)}>
-                      {s.name}
-                      {tag} ({formatCurrency(Number(s.balance))})
-                    </option>
-                  );
-                })}
-              </select>
-            </div>
-
-            {sheet === "transfer" && (
-              <div className="mobile-field">
-                <label>إلى خزنة</label>
-                <select
-                  value={selectedToSafeId}
-                  onChange={(e) => setToSafeId(e.target.value)}
-                >
-                  <option value="" disabled>
-                    اختر الوجهة
-                  </option>
-                  {safes
-                    .filter((s) => String(s.id) !== String(selectedSafeId))
-                    .map((s) => {
-                      const st = transferStatusById[String(s.id)];
-                      const tag =
-                        st === "deleted"
-                          ? " — محذوفة"
-                          : st === "inactive"
-                            ? " — موقوفة"
-                            : "";
-                      return (
-                        <option key={String(s.id)} value={String(s.id)}>
-                          {s.name}
-                          {tag} ({formatCurrency(Number(s.balance))})
-                        </option>
+            {sheet === "transfer" ? (
+              <>
+                <div className="mobile-field">
+                  <label>من خزنة</label>
+                  <select
+                    value={fromSafeId}
+                    onChange={(e) => {
+                      const nextFrom = e.target.value;
+                      setFromSafeId(nextFrom);
+                      setToSafeId((prev) =>
+                        prev === nextFrom
+                          ? transferSafes.find((s) => s.id !== nextFrom)?.id ||
+                            ""
+                          : prev
                       );
-                    })}
-                </select>
-                {selectedSafeId && selectedToSafeId ? (
-                  <p className="mt-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900">
-                    سيتم التحويل من «
-                    {safes.find((s) => String(s.id) === String(selectedSafeId))
-                      ?.name || "—"}
-                    » إلى «
-                    {safes.find((s) => String(s.id) === String(selectedToSafeId))
-                      ?.name || "—"}
-                    »
+                    }}
+                  >
+                    {transferSafes.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {safeOptionLabel(s, s.tag)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="mobile-field">
+                  <label>إلى خزنة</label>
+                  <select
+                    value={toSafeId}
+                    onChange={(e) => setToSafeId(e.target.value)}
+                  >
+                    {toOptions.length === 0 ? (
+                      <option value="">لا توجد خزنة أخرى</option>
+                    ) : (
+                      toOptions.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {safeOptionLabel(s, s.tag)}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+                {fromSafe && toSafe && fromSafe.id !== toSafe.id ? (
+                  <p className="mb-3 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900">
+                    سيتم التحويل من «{fromSafe.name}» إلى «{toSafe.name}»
                   </p>
                 ) : (
-                  <p className="mt-2 text-xs font-semibold text-[var(--danger)]">
-                    اختر خزنة الوجهة
+                  <p className="mb-3 text-xs font-semibold text-[var(--danger)]">
+                    اختر خزنتين مختلفتين
                   </p>
                 )}
+              </>
+            ) : (
+              <div className="mobile-field">
+                <label>الخزنة</label>
+                <select
+                  value={safeId}
+                  onChange={(e) => setSafeId(e.target.value)}
+                >
+                  {safes.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {safeOptionLabel(s)}
+                    </option>
+                  ))}
+                </select>
               </div>
             )}
 
@@ -1007,12 +961,12 @@ export default function MobileFinancePage() {
               type="button"
               className="mobile-btn mobile-btn--primary"
               disabled={saving}
-              onClick={submitSheet}
+              onClick={() => void submitSheet()}
             >
               {saving ? "جاري الحفظ..." : "تأكيد"}
             </button>
           </>
-        )}
+        ) : null}
       </MobileSheet>
     </>
   );
