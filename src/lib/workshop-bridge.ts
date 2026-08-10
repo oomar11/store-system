@@ -107,68 +107,6 @@ export async function isWorkshopBridgeConfigured(): Promise<boolean> {
   }
 }
 
-/** Temporary production diagnostics — safe (no secrets returned). */
-export async function diagnoseWorkshopBridge(): Promise<Record<string, unknown>> {
-  const envRaw = Boolean(
-    process.env.WORKSHOP_BRIDGE_SECRET?.trim() ||
-      process.env.STORE_WORKSHOP_BRIDGE_SECRET?.trim()
-  );
-  const envOk = Boolean(envWorkshopBridgeSecret());
-  const hasUrl = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL?.trim());
-  const hasAnon = Boolean(
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
-      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY?.trim()
-  );
-  const hasService = Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY?.trim());
-  let rpcConfigured: boolean | null = null;
-  let rpcError: string | null = null;
-  try {
-    const client = anonClient();
-    if (!client) {
-      rpcError = "anon_client_null";
-    } else {
-      const { data, error } = await client.rpc("workshop_bridge_is_configured");
-      if (error) rpcError = error.message;
-      else rpcConfigured = Boolean(data);
-    }
-  } catch (e) {
-    rpcError = e instanceof Error ? e.message : "rpc_throw";
-  }
-  let serviceSecretLen = -1;
-  let serviceError: string | null = null;
-  try {
-    const client = await tryCreateServiceClient();
-    if (!client) serviceError = "service_client_null";
-    else {
-      const { data, error } = await client
-        .from("workshop_bridge_config")
-        .select("bridge_secret")
-        .eq("id", BRIDGE_CONFIG_ID)
-        .maybeSingle();
-      if (error) serviceError = error.message;
-      else
-        serviceSecretLen = sanitizeBridgeSecret(
-          String(data?.bridge_secret || "")
-        ).length;
-    }
-  } catch (e) {
-    serviceError = e instanceof Error ? e.message : "service_throw";
-  }
-  return {
-    envRaw,
-    envOk,
-    hasUrl,
-    hasAnon,
-    hasService,
-    rpcConfigured,
-    rpcError,
-    serviceSecretLen,
-    serviceError,
-    cachedConfigured: cachedConfigured ?? null,
-    cachedDbSecretSet: cachedDbSecret !== undefined,
-  };
-}
-
 function secretsEqual(provided: string, expected: string): boolean {
   if (!provided || !expected) return false;
   const a = Buffer.from(provided);
