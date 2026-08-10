@@ -14,6 +14,7 @@ import { GeneralSettingsSection } from "@/components/settings/GeneralSettingsSec
 import { FinanceSettingsSection } from "@/components/settings/FinanceSettingsSection";
 import { PrintSettingsSection } from "@/components/settings/PrintSettingsSection";
 import { InventorySettingsSection } from "@/components/settings/InventorySettingsSection";
+import { WorkshopBridgeSettingsPanel } from "@/components/settings/WorkshopBridgeSettingsPanel";
 import {
   EMPTY_SETTINGS_FORM,
   SETTINGS_SAVE_TABS,
@@ -370,16 +371,21 @@ export default function SettingsPage() {
       )}
 
       {tab === "finance" && canStoreSettings && (
-        <form onSubmit={handleSubmit}>
-          <FinanceSettingsSection
-            form={form}
-            setForm={setForm}
-            safes={safes}
-            reordering={reordering}
-            moveSafe={moveSafe}
-          />
-          <SaveBar />
-        </form>
+        <>
+          <form onSubmit={handleSubmit}>
+            <FinanceSettingsSection
+              form={form}
+              setForm={setForm}
+              safes={safes}
+              reordering={reordering}
+              moveSafe={moveSafe}
+            />
+            <SaveBar />
+          </form>
+          <div className="mt-5">
+            <WorkshopBridgeSettingsPanel />
+          </div>
+        </>
       )}
 
       {tab === "print" && canStoreSettings && (
