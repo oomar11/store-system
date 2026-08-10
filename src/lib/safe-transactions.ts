@@ -1,9 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { logAuditEvent } from "@/lib/audit";
+import { safesOrderQuery } from "@/lib/safes-order";
 import {
-  normalizeSafeNameKey,
-  safesOrderQuery,
-} from "@/lib/safes-order";
+  resolveTransferPair,
+  type TransferSafeRow,
+} from "@/lib/safe-transfer-resolve";
 
 export type SafeMovementType = "deposit" | "withdrawal";
 
@@ -89,42 +90,10 @@ export type TransferBetweenSafesParams = {
   toSafeName?: string | null;
 };
 
-type LiveSafeRow = {
-  id: string;
-  name: string;
+type LiveSafeRow = TransferSafeRow & {
   is_active: boolean;
   balance: number;
-  deleted_at?: string | null;
 };
-
-function sameSafeId(a: string, b: string): boolean {
-  return String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
-}
-
-function pickLiveSafe(
-  live: LiveSafeRow[],
-  preferredId: string,
-  preferredName?: string | null,
-  excludeId?: string | null
-): LiveSafeRow | null {
-  const pool = excludeId
-    ? live.filter((s) => !sameSafeId(s.id, excludeId))
-    : live;
-  const byId = pool.find((s) => sameSafeId(s.id, preferredId));
-  if (byId) return byId;
-  const key = normalizeSafeNameKey(preferredName || "");
-  if (!key) return null;
-  const matches = pool.filter(
-    (s) => normalizeSafeNameKey(s.name) === key
-  );
-  // Prefer a non-deleted active match when recovering by name.
-  return (
-    matches.find((s) => !s.deleted_at && s.is_active) ||
-    matches.find((s) => !s.deleted_at) ||
-    matches[0] ||
-    null
-  );
-}
 
 /** Fetch safes for transfer resolution (includes soft-deleted for recovery). */
 export async function fetchSafesForTransfer(
@@ -183,70 +152,31 @@ export async function transferBetweenSafes(
   const amount = Number(params.amount) || 0;
   if (amount <= 0) return;
 
-  const rawFromId = String(params.fromSafeId || "").trim();
-  const rawToId = String(params.toSafeId || "").trim();
-  if (!rawFromId || !rawToId) {
-    throw new Error("اختر خزنتين مختلفتين للتحويل");
-  }
-  if (sameSafeId(rawFromId, rawToId)) {
-    throw new Error("اختر خزنتين مختلفتين للتحويل");
-  }
-
   const live = await fetchSafesForTransfer(supabase);
-  const activeLive = live.filter((s) => !s.deleted_at && s.is_active);
-  if (activeLive.length < 2 && live.filter((s) => !s.deleted_at).length < 2) {
+  if (live.filter((s) => !s.deleted_at).length < 2 && live.length < 2) {
     throw new Error("يلزم خزنتان على الأقل للتحويل");
   }
 
-  // Resolve independently; never let name-fallback collapse both sides to one row.
-  let fromRow = pickLiveSafe(live, rawFromId, params.fromSafeName);
-  let toRow = pickLiveSafe(
-    live,
-    rawToId,
-    params.toSafeName,
-    fromRow?.id || rawFromId
-  );
-
-  // Second chance: if to/from still missing, try name against full list excluding the other.
-  if (!fromRow) {
-    fromRow = pickLiveSafe(
-      live,
-      rawFromId,
-      params.fromSafeName,
-      toRow?.id || rawToId
-    );
-  }
-  if (!toRow) {
-    toRow = pickLiveSafe(
-      live,
-      rawToId,
-      params.toSafeName,
-      fromRow?.id || rawFromId
-    );
+  const resolved = resolveTransferPair(live, {
+    fromSafeId: params.fromSafeId,
+    toSafeId: params.toSafeId,
+    fromSafeName: params.fromSafeName,
+    toSafeName: params.toSafeName,
+  });
+  if (!resolved.ok) {
+    throw new Error(resolved.error);
   }
 
-  if (!fromRow) {
-    throw new Error(
-      params.fromSafeName
-        ? `الخزنة المصدر «${params.fromSafeName}» غير موجودة على السيرفر — حدّث الصفحة`
-        : "الخزنة المصدر غير موجودة — حدّث الصفحة واختر الخزنة من جديد"
-    );
-  }
-  if (!toRow) {
-    throw new Error(
-      params.toSafeName
-        ? `الخزنة الهدف «${params.toSafeName}» غير موجودة على السيرفر — حدّث الصفحة`
-        : "الخزنة الهدف غير موجودة — حدّث الصفحة واختر الخزنة من جديد"
-    );
-  }
-  if (sameSafeId(fromRow.id, toRow.id)) {
-    throw new Error(
-      `«${fromRow.name}» و«${params.toSafeName || toRow.name}» يشيران لنفس الخزنة على السيرفر — حدّث الصفحة`
-    );
-  }
-
-  fromRow = await ensureSafeUsable(supabase, fromRow);
-  toRow = await ensureSafeUsable(supabase, toRow);
+  const fromRow = await ensureSafeUsable(supabase, {
+    ...resolved.from,
+    is_active: resolved.from.is_active !== false,
+    balance: Number(resolved.from.balance) || 0,
+  });
+  const toRow = await ensureSafeUsable(supabase, {
+    ...resolved.to,
+    is_active: resolved.to.is_active !== false,
+    balance: Number(resolved.to.balance) || 0,
+  });
 
   const fromSafeId = fromRow.id;
   const toSafeId = toRow.id;
