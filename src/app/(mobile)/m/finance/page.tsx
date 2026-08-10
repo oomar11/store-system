@@ -109,6 +109,7 @@ export default function MobileFinancePage() {
 
   const load = useCallback(async () => {
     const offline = !online || !navigator.onLine;
+    setFeedError("");
 
     function mapLocalSafes(
       rows: Array<{
