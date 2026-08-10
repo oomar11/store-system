@@ -224,16 +224,37 @@ function isMissingLedgerRpcError(message: string | undefined): boolean {
   );
 }
 
+function isLedgerRpcAmbiguousError(message: string | undefined): boolean {
+  return /Could not choose the best candidate function.*apply_cross_app_ledger_entry/i.test(
+    message || ""
+  );
+}
+
+function isMissingDetailsColumnError(message: string | undefined): boolean {
+  return /column ["']?details["']? of relation ["']?cross_app_ledger_entries["']? does not exist/i.test(
+    message || ""
+  );
+}
+
+function ledgerSchemaRepairHint(message: string | undefined): string | null {
+  if (
+    isMissingLedgerRpcError(message) ||
+    isLedgerRpcAmbiguousError(message) ||
+    isMissingDetailsColumnError(message)
+  ) {
+    return "دالة حساب الورشة غير مكتملة على قاعدة البيانات — طبّق migration 20260815_fix_cross_app_ledger_details_and_wipe (أو POST /api/workshop/ensure-ledger-rpc) ثم أعد المحاولة";
+  }
+  return null;
+}
+
 export async function applyCrossAppLedgerEntry(
   client: SupabaseClient,
   input: LedgerEntryInput
 ) {
   // PostgREST matches RPCs by the exact named-arg set in the JSON body.
-  // Always sending `p_details: null` forces the 11-arg signature — if migration
-  // `20260811_cross_app_ledger_details.sql` is not applied yet, payments fail.
-  // Only include p_details when we actually have a payload; fall back to the
-  // 10-arg RPC if the details overload is missing from the schema cache.
-  const baseParams = {
+  // Always send `p_details` (even null) so the 11-arg signature is unique when
+  // both 10-arg and 11-arg overloads exist in the schema cache.
+  const params = {
     p_source_system: input.sourceSystem,
     p_source_ref: input.sourceRef,
     p_party_type: input.partyType,
@@ -244,27 +265,17 @@ export async function applyCrossAppLedgerEntry(
     p_occurred_at: input.occurredAt || null,
     p_notes: input.notes || null,
     p_project_label: input.projectLabel || null,
+    p_details: input.details ?? null,
   };
-  const params =
-    input.details != null
-      ? { ...baseParams, p_details: input.details }
-      : baseParams;
 
-  let { data, error } = await client.rpc("apply_cross_app_ledger_entry", params);
-
-  if (error && input.details != null && isMissingLedgerRpcError(error.message)) {
-    ({ data, error } = await client.rpc(
-      "apply_cross_app_ledger_entry",
-      baseParams
-    ));
-  }
+  const { data, error } = await client.rpc(
+    "apply_cross_app_ledger_entry",
+    params
+  );
 
   if (error) {
-    if (isMissingLedgerRpcError(error.message)) {
-      throw new Error(
-        "دالة حساب الورشة غير مفعّلة على قاعدة البيانات — طبّق migration جسر الأطراف (cross_app_ledger) ثم أعد المحاولة"
-      );
-    }
+    const hint = ledgerSchemaRepairHint(error.message);
+    if (hint) throw new Error(hint);
     throw new Error(error.message || "تعذر تسجيل حركة الورشة");
   }
   return data as {

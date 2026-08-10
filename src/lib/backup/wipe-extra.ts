@@ -20,6 +20,22 @@ async function deleteByNeq(
   await assertOk(table, error);
 }
 
+function isMissingRelationError(message: string | undefined): boolean {
+  return /relation .* does not exist|Could not find the table/i.test(
+    message || ""
+  );
+}
+
+async function deleteByNeqIfExists(
+  client: SupabaseClient,
+  table: string,
+  column: string
+): Promise<void> {
+  const { error } = await client.from(table).delete().neq(column, NIL);
+  if (error && isMissingRelationError(error.message)) return;
+  await assertOk(table, error);
+}
+
 /**
  * Full operational wipe via service client (no reseed).
  * Does not touch profiles / telegram_config / backup_runs.
@@ -59,6 +75,11 @@ export async function wipeAllBusinessTables(
     await deleteByNeq(client, table, column);
   }
 
+  // Workshop bridge operational data (keep workshop_bridge_config)
+  await deleteByNeqIfExists(client, "workshop_invoice_inbox", "id");
+  await deleteByNeqIfExists(client, "workshop_party_map", "id");
+  await deleteByNeqIfExists(client, "cross_app_ledger_entries", "id");
+
   {
     const { error } = await client
       .from("document_sequences")
@@ -82,6 +103,7 @@ export async function wipeAllBusinessTables(
 /**
  * Tables the older wipe_business_data() may leave behind.
  * Safe to run AFTER factory_reset() reseed (does not touch settings/safes/accounts).
+ * Missing bridge tables are skipped (pre-bridge databases).
  */
 export async function wipeExtraBusinessTables(
   client: SupabaseClient
@@ -117,6 +139,11 @@ export async function wipeExtraBusinessTables(
   await deleteByNeq(client, "suppliers", "id");
   await deleteByNeq(client, "inventory_count_items", "id");
   await deleteByNeq(client, "inventory_counts", "id");
+
+  // Workshop bridge leftovers older wipe RPCs may leave behind
+  await deleteByNeqIfExists(client, "workshop_invoice_inbox", "id");
+  await deleteByNeqIfExists(client, "workshop_party_map", "id");
+  await deleteByNeqIfExists(client, "cross_app_ledger_entries", "id");
 }
 
 /** Counts that must be 0 after a successful factory reset. */
@@ -133,13 +160,22 @@ export async function countCoreBusinessRows(
     "party_payments",
     "price_tiers",
     "shifts",
+    "workshop_invoice_inbox",
+    "workshop_party_map",
+    "cross_app_ledger_entries",
   ] as const;
   const out: Record<string, number> = {};
   for (const table of tables) {
     const { count, error } = await client
       .from(table)
       .select("*", { count: "exact", head: true });
-    if (error) throw new Error(`فشل عدّ ${table}: ${error.message}`);
+    if (error) {
+      if (isMissingRelationError(error.message)) {
+        out[table] = 0;
+        continue;
+      }
+      throw new Error(`فشل عدّ ${table}: ${error.message}`);
+    }
     out[table] = count ?? 0;
   }
   return out;

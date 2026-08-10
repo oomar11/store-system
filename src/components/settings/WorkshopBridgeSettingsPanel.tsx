@@ -76,6 +76,38 @@ export function WorkshopBridgeSettingsPanel() {
     }
   }
 
+  async function repairLedger() {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/workshop/ensure-ledger-rpc", {
+        method: "POST",
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        applied?: boolean;
+        ready?: boolean;
+        error?: string;
+        sqlEditor?: string;
+        probe?: string | null;
+      };
+      if (!res.ok || !json.ok) {
+        const tip = json.sqlEditor
+          ? ` — افتح SQL Editor والصق migration 20260815`
+          : "";
+        throw new Error((json.error || "فشل إصلاح دفتر الجسر") + tip);
+      }
+      toastSuccess(
+        json.applied
+          ? "تم إصلاح دفتر جسر الورشة على قاعدة البيانات"
+          : "دفتر جسر الورشة جاهز"
+      );
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "فشل إصلاح دفتر الجسر");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveManual() {
     setBusy(true);
     setRevealed("");
@@ -194,6 +226,19 @@ export function WorkshopBridgeSettingsPanel() {
             className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
           >
             تحديث الحالة
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void repairLedger()}
+            className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+          >
+            {busy ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <KeyRound className="h-4 w-4" />
+            )}
+            إصلاح دفتر الجسر
           </button>
         </div>
 
