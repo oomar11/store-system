@@ -89,9 +89,35 @@ export async function transferBetweenSafes(
   const amount = Number(params.amount) || 0;
   if (amount <= 0) return;
 
+  const fromSafeId = String(params.fromSafeId || "").trim();
+  const toSafeId = String(params.toSafeId || "").trim();
+  if (!fromSafeId || !toSafeId) {
+    throw new Error("اختر خزنتين مختلفتين للتحويل");
+  }
+  if (fromSafeId === toSafeId) {
+    throw new Error("اختر خزنتين مختلفتين للتحويل");
+  }
+
+  // Guard against stale offline/ghost ids still shown in mobile selects.
+  const { data: liveSafes, error: liveErr } = await supabase
+    .from("safes")
+    .select("id")
+    .in("id", [fromSafeId, toSafeId])
+    .eq("is_active", true);
+  if (liveErr) {
+    throw new Error(liveErr.message || "تعذر التحقق من الخزائن");
+  }
+  const liveIds = new Set((liveSafes || []).map((s) => String(s.id)));
+  if (!liveIds.has(fromSafeId)) {
+    throw new Error("الخزنة المصدر غير موجودة — حدّث الصفحة واختر الخزنة من جديد");
+  }
+  if (!liveIds.has(toSafeId)) {
+    throw new Error("الخزنة الهدف غير موجودة — حدّث الصفحة واختر الخزنة من جديد");
+  }
+
   const { error } = await supabase.rpc("transfer_between_safes", {
-    p_from_safe_id: params.fromSafeId,
-    p_to_safe_id: params.toSafeId,
+    p_from_safe_id: fromSafeId,
+    p_to_safe_id: toSafeId,
     p_amount: amount,
     p_description: params.description || null,
   });

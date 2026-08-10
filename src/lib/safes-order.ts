@@ -75,3 +75,24 @@ export function normalizeActiveSafes<T extends SafeLike>(
     return String(a.name).localeCompare(String(b.name), "ar");
   });
 }
+
+/**
+ * Keep from/to safe picks aligned with the current active list.
+ * Drops stale offline/ghost ids that no longer exist after a refresh,
+ * and ensures transfer never keeps the same vault in both sides.
+ */
+export function resolveTransferSafeIds(
+  safes: { id: string }[],
+  fromId?: string | null,
+  toId?: string | null
+): { fromId: string; toId: string } {
+  const ids = safes.map((s) => String(s.id)).filter(Boolean);
+  const from =
+    fromId && ids.includes(String(fromId)) ? String(fromId) : ids[0] || "";
+  const destinations = ids.filter((id) => id !== from);
+  const to =
+    toId && destinations.includes(String(toId))
+      ? String(toId)
+      : destinations[0] || "";
+  return { fromId: from, toId: to };
+}

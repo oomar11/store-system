@@ -14,7 +14,6 @@ import { useAuth } from "@/hooks/useAuth";
 import { canAccess, profileSubject } from "@/lib/permissions";
 import {
   applySafeMovement,
-  pickDefaultSafeId,
   transferBetweenSafes,
 } from "@/lib/safe-transactions";
 import {
@@ -30,6 +29,7 @@ import {
 } from "@/lib/offline";
 import {
   normalizeActiveSafes,
+  resolveTransferSafeIds,
   safesOrderQuery,
 } from "@/lib/safes-order";
 import { formatCurrency, formatDateShort } from "@/lib/utils";
@@ -173,7 +173,16 @@ export default function MobileFinancePage() {
       if (message) setFeedError(message);
       const snap = await getSnapshot();
       const localSafes = canTreasury ? mapLocalSafes(snap?.safes || []) : [];
-      if (localSafes.length) setSafes(localSafes);
+      if (localSafes.length) {
+        setSafes(localSafes);
+        setSafeId((prevFrom) => {
+          const resolved = resolveTransferSafeIds(localSafes, prevFrom, null);
+          setToSafeId((prevTo) =>
+            resolveTransferSafeIds(localSafes, resolved.fromId, prevTo).toId
+          );
+          return resolved.fromId;
+        });
+      }
       if (canCustomers) {
         setCustomers(
           (snap?.customers || [])
@@ -206,9 +215,6 @@ export default function MobileFinancePage() {
             )
         );
       }
-      const def = pickDefaultSafeId(localSafes);
-      if (def) setSafeId((prev) => prev || def);
-      if (localSafes[1]) setToSafeId((prev) => prev || localSafes[1].id);
       const nameById = new Map(
         localSafes.map((s) => [s.id, s.name] as const)
       );
@@ -285,9 +291,13 @@ export default function MobileFinancePage() {
 
       const nextSafes = normalizeActiveSafes((safesRes.data || []) as Safe[]);
       setSafes(nextSafes);
-      const def = pickDefaultSafeId(nextSafes);
-      if (def) setSafeId((prev) => prev || def);
-      if (nextSafes[1]) setToSafeId((prev) => prev || nextSafes[1].id);
+      setSafeId((prevFrom) => {
+        const resolved = resolveTransferSafeIds(nextSafes, prevFrom, null);
+        setToSafeId((prevTo) =>
+          resolveTransferSafeIds(nextSafes, resolved.fromId, prevTo).toId
+        );
+        return resolved.fromId;
+      });
 
       const nameById = new Map(
         nextSafes.map((s) => [String(s.id), String(s.name || "خزنة")] as const)
@@ -393,11 +403,22 @@ export default function MobileFinancePage() {
     };
   }, [authLoading, load]);
 
+  const transferPick = resolveTransferSafeIds(safes, safeId, toSafeId);
+  const selectedSafeId = transferPick.fromId;
+  const selectedToSafeId = transferPick.toId;
+
   function openSheet(kind: SheetKind) {
     setError("");
     setAmount("");
     setDescription("");
     setPartyId("");
+    if (kind === "transfer") {
+      const next = resolveTransferSafeIds(safes, safeId, toSafeId);
+      setSafeId(next.fromId);
+      setToSafeId(next.toId);
+    } else if (safes.length && !safes.some((s) => String(s.id) === String(safeId))) {
+      setSafeId(String(safes[0].id));
+    }
     setSheet(kind);
   }
 
@@ -410,22 +431,27 @@ export default function MobileFinancePage() {
 
       if (sheet === "deposit" || sheet === "withdraw") {
         if (!canTreasury) throw new Error("لا تملك صلاحية الخزينة");
+        if (!selectedSafeId) throw new Error("اختر خزنة");
         await applySafeMovement(supabase, {
-          safeId,
+          safeId: selectedSafeId,
           type: sheet === "deposit" ? "deposit" : "withdrawal",
           amount: value,
           description: description || (sheet === "deposit" ? "إيداع" : "سحب"),
         });
       } else if (sheet === "transfer") {
         if (!canTreasury) throw new Error("لا تملك صلاحية الخزينة");
+        if (!selectedSafeId || !selectedToSafeId) {
+          throw new Error("يلزم خزنتان على الأقل للتحويل");
+        }
         await transferBetweenSafes(supabase, {
-          fromSafeId: safeId,
-          toSafeId,
+          fromSafeId: selectedSafeId,
+          toSafeId: selectedToSafeId,
           amount: value,
           description: description || "تحويل بين الخزائن",
         });
       } else if (sheet === "expense") {
         if (!canExpenses) throw new Error("لا تملك صلاحية المصروفات");
+        if (!selectedSafeId) throw new Error("اختر خزنة");
         const today = new Date().toISOString().slice(0, 10);
         const { error: expErr, offline } = await createExpenseOnlineOrQueue(
           supabase,
@@ -434,7 +460,7 @@ export default function MobileFinancePage() {
             amount: value,
             description,
             expenseAccountId,
-            safeId,
+            safeId: selectedSafeId,
             createdBy: profile?.id,
             createdAt: new Date().toISOString(),
           }
@@ -452,6 +478,7 @@ export default function MobileFinancePage() {
           throw new Error("تحصيل/سداد الأطراف غير مسموح لصلاحياتك");
         }
         if (!partyId) throw new Error("اختر الطرف");
+        if (!selectedSafeId) throw new Error("اختر خزنة");
         const party =
           kind === "customer"
             ? customers.find((c) => c.id === partyId)
@@ -462,7 +489,7 @@ export default function MobileFinancePage() {
           partyId,
           partyName: party.name,
           amount: value,
-          safeId,
+          safeId: selectedSafeId,
           notes: description,
           createdAt: new Date().toISOString(),
         });
@@ -770,11 +797,22 @@ export default function MobileFinancePage() {
                 {sheet === "transfer" ? "من خزنة" : "الخزنة"}
               </label>
               <select
-                value={safeId}
-                onChange={(e) => setSafeId(e.target.value)}
+                value={selectedSafeId}
+                onChange={(e) => {
+                  const nextFrom = e.target.value;
+                  setSafeId(nextFrom);
+                  if (sheet === "transfer") {
+                    const next = resolveTransferSafeIds(
+                      safes,
+                      nextFrom,
+                      toSafeId
+                    );
+                    setToSafeId(next.toId);
+                  }
+                }}
               >
                 {safes.map((s) => (
-                  <option key={s.id} value={s.id}>
+                  <option key={String(s.id)} value={String(s.id)}>
                     {s.name} ({formatCurrency(Number(s.balance))})
                   </option>
                 ))}
@@ -785,14 +823,17 @@ export default function MobileFinancePage() {
               <div className="mobile-field">
                 <label>إلى خزنة</label>
                 <select
-                  value={toSafeId}
+                  value={selectedToSafeId}
                   onChange={(e) => setToSafeId(e.target.value)}
                 >
+                  <option value="" disabled>
+                    اختر الوجهة
+                  </option>
                   {safes
-                    .filter((s) => s.id !== safeId)
+                    .filter((s) => String(s.id) !== String(selectedSafeId))
                     .map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
+                      <option key={String(s.id)} value={String(s.id)}>
+                        {s.name} ({formatCurrency(Number(s.balance))})
                       </option>
                     ))}
                 </select>
