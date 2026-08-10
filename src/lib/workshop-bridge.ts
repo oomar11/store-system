@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "crypto";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { NextRequest } from "next/server";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { tryCreateServiceClient } from "@/lib/supabase-service";
 
 const BRIDGE_CONFIG_ID = "c0000000-0000-0000-0000-000000000001";
@@ -11,6 +11,7 @@ const REVOKED_BRIDGE_SECRETS = new Set([
 ]);
 
 let cachedDbSecret: string | null | undefined;
+let cachedConfigured: boolean | undefined;
 
 function sanitizeBridgeSecret(raw: string): string {
   const secret = raw.trim();
@@ -27,9 +28,22 @@ function envWorkshopBridgeSecret(): string {
   );
 }
 
+function anonClient(): SupabaseClient | null {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+  const anon =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY?.trim() ||
+    "";
+  if (!url || !anon) return null;
+  return createClient(url, anon, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
 /** Clear process cache after rotating WORKSHOP_BRIDGE_SECRET / DB row. */
 export function clearWorkshopBridgeSecretCache() {
   cachedDbSecret = undefined;
+  cachedConfigured = undefined;
 }
 
 /** Resolve bridge secret: Vercel env first, then workshop_bridge_config row. */
@@ -61,7 +75,36 @@ export async function resolveWorkshopBridgeSecret(): Promise<string> {
 }
 
 export async function isWorkshopBridgeConfigured(): Promise<boolean> {
-  return Boolean(await resolveWorkshopBridgeSecret());
+  if (envWorkshopBridgeSecret()) return true;
+  if (cachedConfigured !== undefined) return cachedConfigured;
+
+  // Prefer service-role read of the raw secret when available
+  const fromDb = await resolveWorkshopBridgeSecret();
+  if (fromDb) {
+    cachedConfigured = true;
+    return true;
+  }
+
+  // Fallback: SECURITY DEFINER RPC (works with anon key, no secret leaked)
+  try {
+    const client = anonClient();
+    if (!client) {
+      cachedConfigured = false;
+      return false;
+    }
+    const { data, error } = await client.rpc("workshop_bridge_is_configured");
+    if (error) {
+      console.error("workshop_bridge_is_configured", error);
+      cachedConfigured = false;
+      return false;
+    }
+    cachedConfigured = Boolean(data);
+    return cachedConfigured;
+  } catch (e) {
+    console.error("isWorkshopBridgeConfigured", e);
+    cachedConfigured = false;
+    return false;
+  }
 }
 
 function secretsEqual(provided: string, expected: string): boolean {
@@ -76,20 +119,42 @@ function secretsEqual(provided: string, expected: string): boolean {
   }
 }
 
-/** Authorize workshop bridge calls (Bearer or x-workshop-bridge-secret). */
-export async function requireWorkshopBridgeSecret(
-  request: NextRequest
-): Promise<boolean> {
-  const expected = await resolveWorkshopBridgeSecret();
-  if (!expected) return false;
-
+function extractProvidedSecret(request: NextRequest): string {
   const header =
     request.headers.get("x-workshop-bridge-secret")?.trim() || "";
   const auth = request.headers.get("authorization")?.trim() || "";
   const bearer = auth.toLowerCase().startsWith("bearer ")
     ? auth.slice(7).trim()
     : "";
-  return secretsEqual(header || bearer, expected);
+  return sanitizeBridgeSecret(header || bearer);
+}
+
+/** Authorize workshop bridge calls (Bearer or x-workshop-bridge-secret). */
+export async function requireWorkshopBridgeSecret(
+  request: NextRequest
+): Promise<boolean> {
+  const provided = extractProvidedSecret(request);
+  if (!provided) return false;
+
+  const expected = await resolveWorkshopBridgeSecret();
+  if (expected) return secretsEqual(provided, expected);
+
+  // Fallback when service role / env secret unavailable: DB check via RPC
+  try {
+    const client = anonClient();
+    if (!client) return false;
+    const { data, error } = await client.rpc("workshop_bridge_check_secret", {
+      p_secret: provided,
+    });
+    if (error) {
+      console.error("workshop_bridge_check_secret", error);
+      return false;
+    }
+    return Boolean(data);
+  } catch (e) {
+    console.error("requireWorkshopBridgeSecret", e);
+    return false;
+  }
 }
 
 /**
