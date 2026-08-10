@@ -292,7 +292,7 @@ self.addEventListener("fetch", (event) => {
 
   if (url.pathname.startsWith("/api/")) {
     // Health probe must fail fast offline so the app doesn't hang
-    const timeoutMs = url.pathname.startsWith("/api/health") ? 800 : 2000;
+    const timeoutMs = url.pathname.startsWith("/api/health") ? 2500 : 2000;
     event.respondWith(
       (async () => {
         if (self.navigator.onLine === false) {
