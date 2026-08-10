@@ -3,6 +3,7 @@ import { logAuditEvent } from "@/lib/audit";
 import { safesOrderQuery } from "@/lib/safes-order";
 import {
   resolveTransferPair,
+  sameSafeId,
   type TransferSafeRow,
 } from "@/lib/safe-transfer-resolve";
 
@@ -184,29 +185,86 @@ export async function transferBetweenSafes(
     params.fromSafeName?.trim() || fromRow.name || null;
   const toSafeName = params.toSafeName?.trim() || toRow.name || null;
 
-  // Prefer 6-arg RPC (name fallback inside Postgres). Fall back to 4-arg
-  // when migration 20260814 is not applied yet.
-  let { error } = await supabase.rpc("transfer_between_safes", {
-    p_from_safe_id: fromSafeId,
-    p_to_safe_id: toSafeId,
-    p_amount: amount,
-    p_description: params.description || null,
-    p_from_safe_name: fromSafeName,
-    p_to_safe_name: toSafeName,
-  });
-
-  if (
-    error &&
-    /p_from_safe_name|p_to_safe_name|Could not find the function|function public\.transfer_between_safes/i.test(
-      error.message || ""
-    )
+  async function callTransferRpc(
+    fromId: string,
+    toId: string,
+    fromName: string | null,
+    toName: string | null
   ) {
-    ({ error } = await supabase.rpc("transfer_between_safes", {
-      p_from_safe_id: fromSafeId,
-      p_to_safe_id: toSafeId,
+    // Prefer 6-arg RPC (name fallback inside Postgres). Fall back to 4-arg
+    // when migration 20260814 is not applied yet.
+    let { error: rpcError } = await supabase.rpc("transfer_between_safes", {
+      p_from_safe_id: fromId,
+      p_to_safe_id: toId,
       p_amount: amount,
       p_description: params.description || null,
-    }));
+      p_from_safe_name: fromName,
+      p_to_safe_name: toName,
+    });
+
+    if (
+      rpcError &&
+      /p_from_safe_name|p_to_safe_name|Could not find the function|function public\.transfer_between_safes/i.test(
+        rpcError.message || ""
+      )
+    ) {
+      ({ error: rpcError } = await supabase.rpc("transfer_between_safes", {
+        p_from_safe_id: fromId,
+        p_to_safe_id: toId,
+        p_amount: amount,
+        p_description: params.description || null,
+      }));
+    }
+    return rpcError;
+  }
+
+  let error = await callTransferRpc(
+    fromSafeId,
+    toSafeId,
+    fromSafeName,
+    toSafeName
+  );
+
+  // Last resort: ignore the client ids and re-resolve by name only.
+  if (
+    error &&
+    /الخزنة الهدف غير موجودة|الخزنة المصدر غير موجودة/i.test(error.message || "") &&
+    (fromSafeName || toSafeName)
+  ) {
+    const refreshed = await fetchSafesForTransfer(supabase);
+    const byNameOnly = resolveTransferPair(refreshed, {
+      fromSafeId: "",
+      toSafeId: "",
+      fromSafeName,
+      toSafeName,
+    });
+    if (
+      byNameOnly.ok &&
+      (!sameSafeId(byNameOnly.from.id, fromSafeId) ||
+        !sameSafeId(byNameOnly.to.id, toSafeId))
+    ) {
+      const retryFrom = await ensureSafeUsable(supabase, {
+        ...byNameOnly.from,
+        is_active: byNameOnly.from.is_active !== false,
+        balance: Number(byNameOnly.from.balance) || 0,
+      });
+      const retryTo = await ensureSafeUsable(supabase, {
+        ...byNameOnly.to,
+        is_active: byNameOnly.to.is_active !== false,
+        balance: Number(byNameOnly.to.balance) || 0,
+      });
+      error = await callTransferRpc(
+        retryFrom.id,
+        retryTo.id,
+        retryFrom.name,
+        retryTo.name
+      );
+      if (!error) {
+        // Keep notes attachment below using the successful pair.
+        Object.assign(fromRow, retryFrom);
+        Object.assign(toRow, retryTo);
+      }
+    }
   }
 
   if (error) {
@@ -215,13 +273,15 @@ export async function transferBetweenSafes(
 
   const trimmed = params.notes?.trim();
   if (trimmed) {
+    const noteFromId = fromRow.id;
+    const noteToId = toRow.id;
     const { data: rows } = await supabase
       .from("safe_transactions")
       .select("id, safe_id, related_safe_id")
       .eq("type", "transfer")
       .eq("amount", amount)
       .or(
-        `and(safe_id.eq.${fromSafeId},related_safe_id.eq.${toSafeId}),and(safe_id.eq.${toSafeId},related_safe_id.eq.${fromSafeId})`
+        `and(safe_id.eq.${noteFromId},related_safe_id.eq.${noteToId}),and(safe_id.eq.${noteToId},related_safe_id.eq.${noteFromId})`
       )
       .order("created_at", { ascending: false })
       .limit(2);
