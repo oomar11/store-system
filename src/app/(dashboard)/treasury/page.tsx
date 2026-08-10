@@ -20,7 +20,6 @@ import {
   deleteManualSafeMovement,
   deleteSafeTransfer,
   isManualSafeMovement,
-  transferBetweenSafes,
   updateManualSafeMovement,
   updateSafeTransfer,
 } from "@/lib/safe-transactions";
@@ -284,17 +283,30 @@ export default function TreasuryPage() {
 
     setBusy(true);
     try {
-      await transferBetweenSafes(supabase, {
-        fromSafeId: from_safe_id,
-        toSafeId: to_safe_id,
-        fromSafeName:
-          safes.find((s) => String(s.id) === String(from_safe_id))?.name || null,
-        toSafeName:
-          safes.find((s) => String(s.id) === String(to_safe_id))?.name || null,
-        amount,
-        description,
-        notes,
+      const res = await fetch("/api/treasury/transfer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify({
+          fromSafeId: from_safe_id,
+          toSafeId: to_safe_id,
+          fromSafeName:
+            safes.find((s) => String(s.id) === String(from_safe_id))?.name ||
+            null,
+          toSafeName:
+            safes.find((s) => String(s.id) === String(to_safe_id))?.name || null,
+          amount,
+          description,
+          notes,
+        }),
       });
+      const payload = (await res.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(payload.error || "تعذر إتمام التحويل");
+      }
     } catch (err: unknown) {
       toastError(err instanceof Error ? err.message : "تعذر إتمام التحويل");
       return;
