@@ -1,14 +1,20 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
-import { transferBetweenSafes } from "@/lib/safe-transactions";
+import { tryCreateServiceClient } from "@/lib/supabase-service";
+import {
+  transferBetweenSafes,
+  transferBetweenSafesDirect,
+} from "@/lib/safe-transactions";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
  * Mobile-safe transfer endpoint.
- * Resolves stale/empty client ids using safe names before calling the RPC,
- * which fixes «الخزنة الرئيسية» ↔ «خزنة المحل» failures on phone selects.
+ * 1) Auth + treasury permission via user session
+ * 2) Prefer service-role direct transfer (works even when the 6-arg RPC
+ *    migration is not applied yet on production)
+ * 3) Fall back to user-scoped RPC path
  */
 export async function POST(request: Request) {
   try {
@@ -19,6 +25,23 @@ export async function POST(request: Request) {
     } = await supabase.auth.getUser();
     if (authErr || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { data: canTreasury, error: permErr } = await supabase.rpc(
+      "has_app_permission",
+      { p_permission: "treasury" }
+    );
+    if (permErr) {
+      return NextResponse.json(
+        { error: permErr.message || "تعذر التحقق من الصلاحيات" },
+        { status: 400 }
+      );
+    }
+    if (!canTreasury) {
+      return NextResponse.json(
+        { error: "تحويلات الخزينة غير مسموحة لصلاحياتك" },
+        { status: 403 }
+      );
     }
 
     const body = (await request.json()) as {
@@ -39,7 +62,7 @@ export async function POST(request: Request) {
       );
     }
 
-    await transferBetweenSafes(supabase, {
+    const params = {
       fromSafeId: String(body.fromSafeId || ""),
       toSafeId: String(body.toSafeId || ""),
       fromSafeName: body.fromSafeName || null,
@@ -47,9 +70,17 @@ export async function POST(request: Request) {
       amount,
       description: body.description || "تحويل بين الخزائن",
       notes: body.notes || null,
-    });
+    };
 
-    return NextResponse.json({ ok: true });
+    const service = await tryCreateServiceClient();
+    if (service) {
+      await transferBetweenSafesDirect(service, params);
+      return NextResponse.json({ ok: true, path: "service_direct" });
+    }
+
+    // No service role on this host — use session RPC (needs live ids).
+    await transferBetweenSafes(supabase, params);
+    return NextResponse.json({ ok: true, path: "rpc" });
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "تعذر إتمام التحويل بين الخزائن";

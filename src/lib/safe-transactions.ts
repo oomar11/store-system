@@ -297,6 +297,193 @@ export async function transferBetweenSafes(
   }
 }
 
+/**
+ * Transfer using service-role table writes (no RPC).
+ * Used when production has not applied the 6-arg transfer_between_safes migration
+ * and ghost/offline ids still make the 4-arg RPC raise «الخزنة الهدف غير موجودة».
+ */
+export async function transferBetweenSafesDirect(
+  supabase: SupabaseClient,
+  params: TransferBetweenSafesParams
+) {
+  const amount = Number(params.amount) || 0;
+  if (amount <= 0) return;
+
+  const live = await fetchSafesForTransfer(supabase);
+  if (live.length < 2) {
+    throw new Error("يلزم خزنتان على الأقل للتحويل");
+  }
+
+  let resolved = resolveTransferPair(live, {
+    fromSafeId: params.fromSafeId,
+    toSafeId: params.toSafeId,
+    fromSafeName: params.fromSafeName,
+    toSafeName: params.toSafeName,
+  });
+
+  // Prefer labels alone when id-based resolve failed or ids look ghosted.
+  if (
+    !resolved.ok &&
+    (params.fromSafeName || params.toSafeName)
+  ) {
+    resolved = resolveTransferPair(live, {
+      fromSafeId: "",
+      toSafeId: "",
+      fromSafeName: params.fromSafeName,
+      toSafeName: params.toSafeName,
+    });
+  }
+  if (!resolved.ok) {
+    throw new Error(resolved.error);
+  }
+
+  const fromRow = await ensureSafeUsable(supabase, {
+    ...resolved.from,
+    is_active: resolved.from.is_active !== false,
+    balance: Number(resolved.from.balance) || 0,
+  });
+  const toRow = await ensureSafeUsable(supabase, {
+    ...resolved.to,
+    is_active: resolved.to.is_active !== false,
+    balance: Number(resolved.to.balance) || 0,
+  });
+
+  // Re-read balances under service role (bypass stale client cache).
+  const { data: fromFresh, error: fromErr } = await supabase
+    .from("safes")
+    .select("id, name, balance, deleted_at, is_active")
+    .eq("id", fromRow.id)
+    .maybeSingle();
+  const { data: toFresh, error: toErr } = await supabase
+    .from("safes")
+    .select("id, name, balance, deleted_at, is_active")
+    .eq("id", toRow.id)
+    .maybeSingle();
+
+  if (fromErr || !fromFresh) {
+    throw new Error(
+      params.fromSafeName
+        ? `الخزنة المصدر «${params.fromSafeName}» غير موجودة على السيرفر — حدّث الصفحة`
+        : "الخزنة المصدر غير موجودة — حدّث الصفحة واختر الخزنة من جديد"
+    );
+  }
+  if (toErr || !toFresh) {
+    throw new Error(
+      params.toSafeName
+        ? `الخزنة الهدف «${params.toSafeName}» غير موجودة على السيرفر — حدّث الصفحة`
+        : "الخزنة الهدف غير موجودة — حدّث الصفحة واختر الخزنة من جديد"
+    );
+  }
+
+  const fromBalance = Number(fromFresh.balance) || 0;
+  const toBalance = Number(toFresh.balance) || 0;
+  if (fromBalance < amount) {
+    throw new Error("رصيد الخزنة المصدر غير كافٍ");
+  }
+
+  const note =
+    String(params.description || "").trim() ||
+    `تحويل من ${fromFresh.name} إلى ${toFresh.name}`;
+  const groupId =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const { error: fromUpdErr } = await supabase
+    .from("safes")
+    .update({
+      balance: fromBalance - amount,
+      deleted_at: null,
+      is_active: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", fromFresh.id);
+  if (fromUpdErr) {
+    throw new Error(fromUpdErr.message || "تعذر خصم رصيد الخزنة المصدر");
+  }
+
+  const { error: toUpdErr } = await supabase
+    .from("safes")
+    .update({
+      balance: toBalance + amount,
+      deleted_at: null,
+      is_active: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", toFresh.id);
+  if (toUpdErr) {
+    // Best-effort rollback of the source debit.
+    await supabase
+      .from("safes")
+      .update({ balance: fromBalance })
+      .eq("id", fromFresh.id);
+    throw new Error(toUpdErr.message || "تعذر إضافة رصيد الخزنة الهدف");
+  }
+
+  const { error: txErr } = await supabase.from("safe_transactions").insert([
+    {
+      safe_id: fromFresh.id,
+      type: "transfer",
+      amount,
+      description: note,
+      related_safe_id: toFresh.id,
+      transfer_group_id: groupId,
+      reference_type: "transfer_out",
+      notes: params.notes?.trim() || null,
+    },
+    {
+      safe_id: toFresh.id,
+      type: "transfer",
+      amount,
+      description: note,
+      related_safe_id: fromFresh.id,
+      transfer_group_id: groupId,
+      reference_type: "transfer_in",
+      notes: params.notes?.trim() || null,
+    },
+  ]);
+
+  if (txErr) {
+    // Best-effort rollback balances if ledger insert failed.
+    await supabase
+      .from("safes")
+      .update({ balance: fromBalance })
+      .eq("id", fromFresh.id);
+    await supabase
+      .from("safes")
+      .update({ balance: toBalance })
+      .eq("id", toFresh.id);
+    throw new Error(txErr.message || "تعذر تسجيل حركة التحويل");
+  }
+
+  try {
+    await logAuditEvent(supabase, {
+      action: "safe.transfer",
+      entityType: "safe",
+      entityId: fromFresh.id,
+      entityLabel: `${fromFresh.name} ← ${toFresh.name}`,
+      before: { from_balance: fromBalance, to_balance: toBalance },
+      after: {
+        from_balance: fromBalance - amount,
+        to_balance: toBalance + amount,
+      },
+      meta: {
+        amount,
+        from_safe_id: fromFresh.id,
+        to_safe_id: toFresh.id,
+        from_name: fromFresh.name,
+        to_name: toFresh.name,
+        description: note,
+        path: "service_direct",
+      },
+      source: "api",
+    });
+  } catch {
+    /* audit is best-effort */
+  }
+}
+
+
 export type InvoiceSafeDirection = "sale" | "purchase" | "sale_return" | "purchase_return";
 
 /** Sale / purchase_return put cash into the safe; purchase / sale_return take cash out. */
