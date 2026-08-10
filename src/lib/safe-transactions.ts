@@ -80,7 +80,31 @@ export type TransferBetweenSafesParams = {
   amount: number;
   description?: string;
   notes?: string | null;
+  /** Optional labels — used to recover when offline/ghost ids went stale. */
+  fromSafeName?: string | null;
+  toSafeName?: string | null;
 };
+
+function normalizeSafeLabel(name: string | null | undefined): string {
+  return String(name || "")
+    .trim()
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function pickLiveSafeId(
+  live: { id: string; name: string }[],
+  preferredId: string,
+  preferredName?: string | null
+): string | null {
+  const byId = live.find((s) => String(s.id) === preferredId);
+  if (byId) return String(byId.id);
+  const key = normalizeSafeLabel(preferredName);
+  if (!key) return null;
+  const byName = live.find((s) => normalizeSafeLabel(s.name) === key);
+  return byName ? String(byName.id) : null;
+}
 
 export async function transferBetweenSafes(
   supabase: SupabaseClient,
@@ -89,8 +113,8 @@ export async function transferBetweenSafes(
   const amount = Number(params.amount) || 0;
   if (amount <= 0) return;
 
-  const fromSafeId = String(params.fromSafeId || "").trim();
-  const toSafeId = String(params.toSafeId || "").trim();
+  let fromSafeId = String(params.fromSafeId || "").trim();
+  let toSafeId = String(params.toSafeId || "").trim();
   if (!fromSafeId || !toSafeId) {
     throw new Error("اختر خزنتين مختلفتين للتحويل");
   }
@@ -98,22 +122,51 @@ export async function transferBetweenSafes(
     throw new Error("اختر خزنتين مختلفتين للتحويل");
   }
 
-  // Guard against stale offline/ghost ids still shown in mobile selects.
-  const { data: liveSafes, error: liveErr } = await supabase
+  // Always resolve against the live server list — mobile often keeps stale
+  // offline/ghost ids in select state after a refresh or name-dedupe.
+  const liveQuery = supabase
     .from("safes")
-    .select("id")
-    .in("id", [fromSafeId, toSafeId])
+    .select("id, name, is_active, deleted_at")
     .eq("is_active", true);
-  if (liveErr) {
-    throw new Error(liveErr.message || "تعذر التحقق من الخزائن");
+  // deleted_at exists after local-first migration; ignore filter errors on older DBs.
+  const liveAttempt = await liveQuery.is("deleted_at", null);
+  const liveRes =
+    liveAttempt.error && /deleted_at/i.test(liveAttempt.error.message || "")
+      ? await supabase
+          .from("safes")
+          .select("id, name, is_active")
+          .eq("is_active", true)
+      : liveAttempt;
+
+  if (liveRes.error) {
+    throw new Error(liveRes.error.message || "تعذر التحقق من الخزائن");
   }
-  const liveIds = new Set((liveSafes || []).map((s) => String(s.id)));
-  if (!liveIds.has(fromSafeId)) {
-    throw new Error("الخزنة المصدر غير موجودة — حدّث الصفحة واختر الخزنة من جديد");
+
+  const live = (liveRes.data || []).map((s) => ({
+    id: String(s.id),
+    name: String(s.name || ""),
+  }));
+  if (live.length < 2) {
+    throw new Error("يلزم خزنتان نشطتان على الأقل للتحويل");
   }
-  if (!liveIds.has(toSafeId)) {
-    throw new Error("الخزنة الهدف غير موجودة — حدّث الصفحة واختر الخزنة من جديد");
+
+  const resolvedFrom = pickLiveSafeId(live, fromSafeId, params.fromSafeName);
+  const resolvedTo = pickLiveSafeId(live, toSafeId, params.toSafeName);
+  if (!resolvedFrom) {
+    throw new Error(
+      "الخزنة المصدر غير موجودة — حدّث الصفحة واختر الخزنة من جديد"
+    );
   }
+  if (!resolvedTo) {
+    throw new Error(
+      "الخزنة الهدف غير موجودة — حدّث الصفحة واختر الخزنة من جديد"
+    );
+  }
+  if (resolvedFrom === resolvedTo) {
+    throw new Error("اختر خزنتين مختلفتين للتحويل");
+  }
+  fromSafeId = resolvedFrom;
+  toSafeId = resolvedTo;
 
   const { error } = await supabase.rpc("transfer_between_safes", {
     p_from_safe_id: fromSafeId,
@@ -134,7 +187,7 @@ export async function transferBetweenSafes(
       .eq("type", "transfer")
       .eq("amount", amount)
       .or(
-        `and(safe_id.eq.${params.fromSafeId},related_safe_id.eq.${params.toSafeId}),and(safe_id.eq.${params.toSafeId},related_safe_id.eq.${params.fromSafeId})`
+        `and(safe_id.eq.${fromSafeId},related_safe_id.eq.${toSafeId}),and(safe_id.eq.${toSafeId},related_safe_id.eq.${fromSafeId})`
       )
       .order("created_at", { ascending: false })
       .limit(2);
