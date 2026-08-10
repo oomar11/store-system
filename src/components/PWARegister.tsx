@@ -62,6 +62,22 @@ export function PWARegister() {
   useEffect(() => {
     let registration: ServiceWorkerRegistration | null = null;
     let warmTimer: number | undefined;
+    let updateTimer: number | undefined;
+
+    const onControllerChange = () => {
+      // Guard against reload loops when multiple SW updates race.
+      if (sessionStorage.getItem("windoor-sw-reloading") === "1") return;
+      sessionStorage.setItem("windoor-sw-reloading", "1");
+      window.setTimeout(() => {
+        sessionStorage.removeItem("windoor-sw-reloading");
+      }, 8000);
+      // New SW claimed the page — drop stale JS (old transfer RPC path).
+      window.location.reload();
+    };
+    navigator.serviceWorker?.addEventListener(
+      "controllerchange",
+      onControllerChange
+    );
 
     void registerServiceWorker().then((reg) => {
       if (!reg) return;
@@ -72,6 +88,10 @@ export function PWARegister() {
       if (reg.waiting && navigator.serviceWorker.controller) {
         setWaitingWorker(reg.waiting);
         setUpdateReady(true);
+        // Auto-apply so phones don't stay on cached transfer bugs.
+        updateTimer = window.setTimeout(() => {
+          reg.waiting?.postMessage({ type: "SKIP_WAITING" });
+        }, 400);
       }
       reg.addEventListener("updatefound", () => {
         const installing = reg.installing;
@@ -86,6 +106,9 @@ export function PWARegister() {
           }
         });
       });
+
+      // Force a check on finance/treasury sessions.
+      void reg.update().catch(() => undefined);
 
       if (isBrowserOnline()) {
         warmTimer = window.setTimeout(() => {
@@ -110,7 +133,12 @@ export function PWARegister() {
 
     return () => {
       window.removeEventListener("online", onOnline);
+      navigator.serviceWorker?.removeEventListener(
+        "controllerchange",
+        onControllerChange
+      );
       if (warmTimer) window.clearTimeout(warmTimer);
+      if (updateTimer) window.clearTimeout(updateTimer);
       void registration;
     };
   }, []);

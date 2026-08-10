@@ -517,10 +517,17 @@ export default function MobileFinancePage() {
         );
         const res = await fetch("/api/treasury/transfer", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          },
+          cache: "no-store",
+          credentials: "same-origin",
           body: JSON.stringify({
             fromSafeId: selectedSafeId,
             toSafeId: selectedToSafeId,
+            // Always send labels — even if id lookup missed — so the API/RPC
+            // can recover «المحل» ↔ «خزنة المحل» from ghost offline ids.
             fromSafeName: fromSafe?.name || null,
             toSafeName: toSafe?.name || null,
             amount: value,
@@ -531,7 +538,18 @@ export default function MobileFinancePage() {
           error?: string;
         };
         if (!res.ok) {
-          throw new Error(payload.error || "تعذر إتمام التحويل بين الخزائن");
+          const msg = payload.error || "تعذر إتمام التحويل بين الخزائن";
+          // Nudge PWA update when the phone is still on a stale transfer path.
+          if (/الخزنة الهدف غير موجودة|الخزنة المصدر غير موجودة/i.test(msg)) {
+            try {
+              const reg = await navigator.serviceWorker?.getRegistration();
+              await reg?.update();
+              reg?.waiting?.postMessage({ type: "SKIP_WAITING" });
+            } catch {
+              /* ignore */
+            }
+          }
+          throw new Error(msg);
         }
       } else if (sheet === "expense") {
         if (!canExpenses) throw new Error("لا تملك صلاحية المصروفات");

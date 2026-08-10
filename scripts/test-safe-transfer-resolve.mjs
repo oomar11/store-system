@@ -20,24 +20,53 @@ function normalizeSafeNameKey(name) {
     .toLowerCase();
 }
 
+function safeNamesLooselyMatch(a, b) {
+  const ka = normalizeSafeNameKey(a || "");
+  const kb = normalizeSafeNameKey(b || "");
+  if (!ka || !kb) return false;
+  if (ka === kb) return true;
+  const stripVaultPrefix = (k) =>
+    k.replace(/^الخزنه\s+/, "").replace(/^خزنه\s+/, "").trim();
+  const sa = stripVaultPrefix(ka);
+  const sb = stripVaultPrefix(kb);
+  if (sa && sb && (sa === sb || sa === kb || sb === ka)) return true;
+  const shorter = sa.length <= sb.length ? sa : sb;
+  const longer = sa.length <= sb.length ? sb : sa;
+  if (shorter.length >= 3 && longer.includes(shorter)) return true;
+  return false;
+}
+
+function rankLiveSafe(row) {
+  let score = 0;
+  if (!row.deleted_at) score += 2;
+  if (row.is_active !== false) score += 1;
+  return score;
+}
+
+function pickBestNameMatch(pool, preferredName) {
+  const matches = pool.filter((s) =>
+    safeNamesLooselyMatch(s.name, preferredName)
+  );
+  if (!matches.length) return null;
+  return matches.sort((a, b) => rankLiveSafe(b) - rankLiveSafe(a))[0] || null;
+}
+
 function pickLiveSafe(live, preferredId, preferredName, excludeId) {
   const pool = excludeId
     ? live.filter((s) => !sameSafeId(s.id, excludeId))
     : live;
   const id = String(preferredId || "").trim();
-  if (id) {
-    const byId = pool.find((s) => sameSafeId(s.id, id));
-    if (byId) return byId;
+  const byId = id ? pool.find((s) => sameSafeId(s.id, id)) : undefined;
+  if (byId) {
+    if (
+      !preferredName ||
+      safeNamesLooselyMatch(byId.name, preferredName) ||
+      !pickBestNameMatch(pool, preferredName)
+    ) {
+      return byId;
+    }
   }
-  const key = normalizeSafeNameKey(preferredName || "");
-  if (!key) return null;
-  const matches = pool.filter((s) => normalizeSafeNameKey(s.name) === key);
-  return (
-    matches.find((s) => !s.deleted_at && s.is_active !== false) ||
-    matches.find((s) => !s.deleted_at) ||
-    matches[0] ||
-    null
-  );
+  return pickBestNameMatch(pool, preferredName);
 }
 
 function resolveTransferPair(live, params) {
@@ -228,6 +257,44 @@ check("OLD BUG: ghost toId without name recovery would hit RPC not-found", () =>
   const byIdOnly = live.find((s) => sameSafeId(s.id, GHOST_STORE));
   assert.equal(byIdOnly, undefined);
   // This is what production RPC sees when mobile sends a stale offline id.
+});
+
+check("loose name: المحل matches خزنة المحل", () => {
+  const liveShort = [
+    live[0],
+    { ...live[1], name: "المحل" },
+  ];
+  const r = resolveTransferPair(liveShort, {
+    fromSafeId: GHOST_MAIN,
+    toSafeId: GHOST_STORE,
+    fromSafeName: "الخزنة الرئيسية",
+    toSafeName: "خزنة المحل",
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.to.id, LIVE_STORE);
+});
+
+check("ghost id that still exists but wrong name prefers label", () => {
+  // Leftover soft row kept the ghost id under a junk label; UI still says خزنة المحل.
+  const messy = [
+    live[0],
+    {
+      id: GHOST_STORE,
+      name: "offline-ghost",
+      is_active: false,
+      balance: 0,
+      deleted_at: "2026-08-01T00:00:00Z",
+    },
+    live[1],
+  ];
+  const r = resolveTransferPair(messy, {
+    fromSafeId: LIVE_MAIN,
+    toSafeId: GHOST_STORE,
+    fromSafeName: "الخزنة الرئيسية",
+    toSafeName: "خزنة المحل",
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.to.id, LIVE_STORE);
 });
 
 console.log(`\n${passed} assertions passed`);

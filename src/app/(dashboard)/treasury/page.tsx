@@ -287,6 +287,10 @@ export default function TreasuryPage() {
       await transferBetweenSafes(supabase, {
         fromSafeId: from_safe_id,
         toSafeId: to_safe_id,
+        fromSafeName:
+          safes.find((s) => String(s.id) === String(from_safe_id))?.name || null,
+        toSafeName:
+          safes.find((s) => String(s.id) === String(to_safe_id))?.name || null,
         amount,
         description,
         notes,
