@@ -27,7 +27,6 @@ import {
   createExpenseOnlineOrQueue,
   getSnapshot,
   listActiveEntities,
-  readLocalThenNetwork,
   withTimeout,
 } from "@/lib/offline";
 import { useOffline } from "@/components/offline/OfflineProvider";
@@ -55,6 +54,12 @@ type SheetKind =
   | "collect"
   | "pay_supplier"
   | null;
+
+const TX_TYPE_LABELS: Record<string, string> = {
+  deposit: "إيداع",
+  withdrawal: "سحب",
+  transfer: "تحويل",
+};
 
 export default function MobileFinancePage() {
   const supabase = useMemo(() => createClient(), []);
@@ -109,141 +114,105 @@ export default function MobileFinancePage() {
   const load = useCallback(async () => {
     const offline = !online || !navigator.onLine;
 
-    // Core catalog from snapshot first
-    await readLocalThenNetwork<{
-      safes: Safe[];
-      customers: Customer[];
-      suppliers: Supplier[];
-    }>({
-      offline,
-      timeoutMs: 5000,
-      // Prefer network when online so stale offline ghosts don't stick as duplicates.
-      backgroundRefresh: false,
-      local: async () => {
-        const snap = await getSnapshot();
-        if (!snap) return null;
-        return {
-          safes: canTreasury
-            ? normalizeActiveSafes(
-                (snap.safes || []).map(
-                  (s) =>
-                    ({
-                      id: s.id,
-                      name: s.name,
-                      balance: s.balance,
-                      is_active: s.is_active,
-                      sort_order: s.sort_order ?? undefined,
-                      created_at: "",
-                    }) as Safe
-                )
-              )
-            : [],
-          customers: canCustomers
-            ? (snap.customers || [])
-                .filter((c) => c.is_active !== false)
-                .map(
-                  (c) =>
-                    ({
-                      id: c.id,
-                      name: c.name,
-                      phone: c.phone || undefined,
-                      balance: c.balance,
-                      created_at: "",
-                    }) as Customer
-                )
-            : [],
-          suppliers: canSuppliers
-            ? (snap.suppliers || [])
-                .filter((s) => s.is_active !== false)
-                .map(
-                  (s) =>
-                    ({
-                      id: s.id,
-                      name: s.name,
-                      phone: s.phone || undefined,
-                      balance: s.balance,
-                      created_at: "",
-                    }) as Supplier
-                )
-            : [],
-        };
-      },
-      network: async () => {
-        const [safesRes, custRes, suppRes] = await withTimeout(
-          Promise.all([
-            canTreasury
-              ? safesOrderQuery(
-                  supabase.from("safes").select("*").eq("is_active", true)
-                )
-              : Promise.resolve({ data: [] as Safe[], error: null }),
-            canCustomers
-              ? supabase
-                  .from("customers")
-                  .select("*")
-                  .eq("is_active", true)
-                  .order("name")
-                  .limit(200)
-              : Promise.resolve({ data: [] as Customer[], error: null }),
-            canSuppliers
-              ? supabase
-                  .from("suppliers")
-                  .select("*")
-                  .eq("is_active", true)
-                  .order("name")
-                  .limit(200)
-              : Promise.resolve({ data: [] as Supplier[], error: null }),
-          ]),
-          5000
-        );
-        return {
-          safes: normalizeActiveSafes((safesRes.data || []) as Safe[]),
-          customers: (custRes.data || []) as Customer[],
-          suppliers: (suppRes.data || []) as Supplier[],
-        };
-      },
-      apply: (data) => {
-        const safes = normalizeActiveSafes(data.safes);
-        setSafes(safes);
-        setCustomers(data.customers);
-        setSuppliers(data.suppliers);
-        const def = pickDefaultSafeId(safes);
-        if (def) setSafeId((prev) => prev || def);
-        if (safes[1]) setToSafeId((prev) => prev || safes[1].id);
-      },
-    });
+    function mapLocalSafes(
+      rows: Array<{
+        id: string;
+        name: string;
+        balance: number;
+        is_active?: boolean;
+        sort_order?: number | null;
+      }>
+    ): Safe[] {
+      return normalizeActiveSafes(
+        rows.map(
+          (s) =>
+            ({
+              id: s.id,
+              name: s.name,
+              balance: s.balance,
+              is_active: s.is_active !== false,
+              sort_order: s.sort_order ?? undefined,
+              created_at: "",
+            }) as Safe
+        )
+      );
+    }
 
-    async function loadTxFromLocal() {
+    async function loadTxFromLocal(safeNameById: Map<string, string>) {
       if (!canTreasury) {
         setTxRows([]);
         return;
       }
-      const [txs, localSafes] = await Promise.all([
-        listActiveEntities("safe_transactions"),
-        listActiveEntities("safes"),
-      ]);
-      const safeName = new Map(
-        localSafes.map((s) => [String(s.id), String(s.name || "خزنة")])
-      );
+      const txs = await listActiveEntities("safe_transactions");
       const rows = txs
         .map((t) => ({
           id: String(t.id),
           type: String(t.type || ""),
           amount: Number(t.amount) || 0,
-          description: (t.description as string | null) || (t.notes as string | null) || null,
+          description:
+            (t.description as string | null) ||
+            (t.notes as string | null) ||
+            null,
           created_at: String(t.created_at || ""),
-          safe: { name: safeName.get(String(t.safe_id)) || "خزنة" },
+          safe: {
+            name: safeNameById.get(String(t.safe_id)) || "خزنة",
+          },
         }))
         .filter((t) => t.id && t.created_at)
         .sort(
           (a, b) =>
             new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         )
-        .slice(0, 20);
+        .slice(0, 40);
       setTxRows(rows);
     }
 
     if (offline) {
-      await loadTxFromLocal();
+      const snap = await getSnapshot();
+      const localSafes = canTreasury
+        ? mapLocalSafes(snap?.safes || [])
+        : [];
+      setSafes(localSafes);
+      if (canCustomers) {
+        setCustomers(
+          (snap?.customers || [])
+            .filter((c) => c.is_active !== false)
+            .map(
+              (c) =>
+                ({
+                  id: c.id,
+                  name: c.name,
+                  phone: c.phone || undefined,
+                  balance: c.balance,
+                  created_at: "",
+                }) as Customer
+            )
+        );
+      }
+      if (canSuppliers) {
+        setSuppliers(
+          (snap?.suppliers || [])
+            .filter((s) => s.is_active !== false)
+            .map(
+              (s) =>
+                ({
+                  id: s.id,
+                  name: s.name,
+                  phone: s.phone || undefined,
+                  balance: s.balance,
+                  created_at: "",
+                }) as Supplier
+            )
+        );
+      }
+      const def = pickDefaultSafeId(localSafes);
+      if (def) setSafeId((prev) => prev || def);
+      if (localSafes[1]) setToSafeId((prev) => prev || localSafes[1].id);
+
+      const nameById = new Map(
+        localSafes.map((s) => [s.id, s.name] as const)
+      );
+      await loadTxFromLocal(nameById);
       if (canExpenses) {
         try {
           const { listExpensesLocal } = await import("@/lib/offline");
@@ -255,66 +224,122 @@ export default function MobileFinancePage() {
       return;
     }
 
-    const tasks: Promise<void>[] = [];
-
-    if (canTreasury) {
-      tasks.push(
-        (async () => {
-          // Disambiguate: safe_transactions has two FKs to safes (safe_id + related_safe_id).
-          const { data, error: txErr } = await supabase
-            .from("safe_transactions")
-            .select(
-              "id, type, amount, description, notes, created_at, safe:safes!safe_id(name)"
-            )
-            .order("created_at", { ascending: false })
-            .limit(20);
-          if (txErr || !data) {
-            await loadTxFromLocal();
-            return;
-          }
-          setTxRows(
-            (data as Array<{
-              id: string;
-              type: string;
-              amount: number;
-              description: string | null;
-              notes?: string | null;
-              created_at: string;
-              safe?: { name?: string };
-            }>).map((t) => ({
-              id: t.id,
-              type: t.type,
-              amount: t.amount,
-              description: t.description || t.notes || null,
-              created_at: t.created_at,
-              safe: t.safe,
-            }))
-          );
-        })()
+    // Online: network is source of truth — avoid applying offline ghosts first.
+    try {
+      const [safesRes, custRes, suppRes] = await withTimeout(
+        Promise.all([
+          canTreasury
+            ? safesOrderQuery(
+                supabase.from("safes").select("*").eq("is_active", true)
+              )
+            : Promise.resolve({ data: [] as Safe[], error: null }),
+          canCustomers
+            ? supabase
+                .from("customers")
+                .select("*")
+                .eq("is_active", true)
+                .order("name")
+                .limit(200)
+            : Promise.resolve({ data: [] as Customer[], error: null }),
+          canSuppliers
+            ? supabase
+                .from("suppliers")
+                .select("*")
+                .eq("is_active", true)
+                .order("name")
+                .limit(200)
+            : Promise.resolve({ data: [] as Supplier[], error: null }),
+        ]),
+        8000
       );
-    }
 
-    if (canExpenses) {
-      tasks.push(
-        (async () => {
-          await ensureExpenseAccounts(supabase);
-          const { data } = await listExpenses(supabase, 20);
-          setExpenses(data || []);
-          const { data: accounts } = await supabase
-            .from("accounts")
-            .select("*")
-            .eq("type", "expense")
-            .eq("is_active", true)
-            .order("code");
-          setExpenseAccounts((accounts || []) as Account[]);
-          if (accounts?.[0]) {
-            setExpenseAccountId((prev) => prev || accounts[0].id);
-          }
-        })()
+      if (safesRes.error) {
+        throw new Error(safesRes.error.message || "تعذر تحميل الخزائن");
+      }
+
+      const nextSafes = normalizeActiveSafes((safesRes.data || []) as Safe[]);
+      setSafes(nextSafes);
+      setCustomers((custRes.data || []) as Customer[]);
+      setSuppliers((suppRes.data || []) as Supplier[]);
+      const def = pickDefaultSafeId(nextSafes);
+      if (def) setSafeId((prev) => prev || def);
+      if (nextSafes[1]) setToSafeId((prev) => prev || nextSafes[1].id);
+
+      const nameById = new Map(
+        nextSafes.map((s) => [s.id, s.name] as const)
       );
-    }
 
-    await Promise.all(tasks);
+      const tasks: Promise<void>[] = [];
+
+      if (canTreasury) {
+        tasks.push(
+          (async () => {
+            // No embed — safe_transactions has two FKs to safes; join names locally.
+            const { data, error: txErr } = await supabase
+              .from("safe_transactions")
+              .select(
+                "id, type, amount, description, notes, created_at, safe_id"
+              )
+              .order("created_at", { ascending: false })
+              .limit(40);
+
+            if (txErr || !data) {
+              console.warn("[mobile/finance] safe_transactions", txErr);
+              await loadTxFromLocal(nameById);
+              return;
+            }
+
+            setTxRows(
+              data.map((t) => ({
+                id: String(t.id),
+                type: String(t.type || ""),
+                amount: Number(t.amount) || 0,
+                description:
+                  (t.description as string | null) ||
+                  (t.notes as string | null) ||
+                  null,
+                created_at: String(t.created_at || ""),
+                safe: {
+                  name: nameById.get(String(t.safe_id)) || "خزنة",
+                },
+              }))
+            );
+          })()
+        );
+      }
+
+      if (canExpenses) {
+        tasks.push(
+          (async () => {
+            await ensureExpenseAccounts(supabase);
+            const { data } = await listExpenses(supabase, 20);
+            setExpenses(data || []);
+            const { data: accounts } = await supabase
+              .from("accounts")
+              .select("*")
+              .eq("type", "expense")
+              .eq("is_active", true)
+              .order("code");
+            setExpenseAccounts((accounts || []) as Account[]);
+            if (accounts?.[0]) {
+              setExpenseAccountId((prev) => prev || accounts[0].id);
+            }
+          })()
+        );
+      }
+
+      await Promise.all(tasks);
+    } catch (err) {
+      console.warn("[mobile/finance] network load failed", err);
+      // Fall back to local catalog so the page still opens offline-ish.
+      const snap = await getSnapshot();
+      const localSafes = canTreasury ? mapLocalSafes(snap?.safes || []) : [];
+      if (localSafes.length) setSafes(localSafes);
+      const nameById = new Map(
+        localSafes.map((s) => [s.id, s.name] as const)
+      );
+      await loadTxFromLocal(nameById);
+    }
   }, [
     canCustomers,
     canExpenses,
@@ -566,7 +591,7 @@ export default function MobileFinancePage() {
                 <div className="mobile-panel">
                   {safes.map((s) => (
                     <MobileListRow
-                      key={s.id}
+                      key={`safe-${s.id}`}
                       title={s.name}
                       amount={Number(s.balance)}
                       amountTone={
@@ -604,12 +629,20 @@ export default function MobileFinancePage() {
                   ) : (
                     txRows.map((t) => (
                       <MobileListRow
-                        key={t.id}
-                        title={t.description || t.type}
+                        key={`tx-${t.id}`}
+                        title={
+                          t.description ||
+                          TX_TYPE_LABELS[t.type] ||
+                          t.type
+                        }
                         subtitle={`${t.safe?.name || "خزنة"} · ${formatDateShort(t.created_at)}`}
                         amount={Number(t.amount)}
                         amountTone={
-                          t.type === "deposit" ? "positive" : "negative"
+                          t.type === "deposit"
+                            ? "positive"
+                            : t.type === "transfer"
+                              ? "muted"
+                              : "negative"
                         }
                       />
                     ))

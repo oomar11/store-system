@@ -85,7 +85,9 @@ export default function MobileHomePage() {
 
     await readLocalThenNetwork<HomeStats>({
       offline,
-      timeoutMs: 5000,
+      timeoutMs: 8000,
+      // Wait for network when online so offline ghost safes don't stick.
+      backgroundRefresh: false,
       local: async () => {
         const snap = await getSnapshot();
         if (!snap) return null;

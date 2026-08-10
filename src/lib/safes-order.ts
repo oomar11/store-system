@@ -17,6 +17,15 @@ type SafeLike = {
   sort_order?: number | null;
 };
 
+/** Normalize Arabic/English safe names for ghost dedupe. */
+export function normalizeSafeNameKey(name: string): string {
+  return String(name || "")
+    .trim()
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, "") // harakat + tatweel
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
 /**
  * Active safes only, unique by id (and by name for stale offline ghosts),
  * sorted by sort_order then Arabic name.
@@ -27,6 +36,7 @@ export function normalizeActiveSafes<T extends SafeLike>(
   const byId = new Map<string, T>();
   for (const row of rows || []) {
     if (!row?.id) continue;
+    // Treat only explicit false as inactive; missing means active for older rows.
     if (row.is_active === false) continue;
     byId.set(String(row.id), row);
   }
@@ -34,9 +44,12 @@ export function normalizeActiveSafes<T extends SafeLike>(
   // Collapse sync ghosts that kept the same display name under a dead id.
   const byName = new Map<string, T>();
   for (const row of byId.values()) {
-    const key = String(row.name || "")
-      .trim()
-      .toLowerCase();
+    const key = normalizeSafeNameKey(row.name);
+    if (!key) {
+      // Keep unnamed rows keyed by id so we don't drop everything.
+      byName.set(`__id:${row.id}`, row);
+      continue;
+    }
     const prev = byName.get(key);
     if (!prev) {
       byName.set(key, row);
@@ -44,7 +57,15 @@ export function normalizeActiveSafes<T extends SafeLike>(
     }
     const prevBal = Math.abs(Number(prev.balance) || 0);
     const nextBal = Math.abs(Number(row.balance) || 0);
-    if (nextBal >= prevBal) byName.set(key, row);
+    // Prefer the row with the larger absolute balance (live vault),
+    // then the one marked explicitly active.
+    if (nextBal > prevBal) {
+      byName.set(key, row);
+      continue;
+    }
+    if (nextBal === prevBal && row.is_active === true && prev.is_active !== true) {
+      byName.set(key, row);
+    }
   }
 
   return Array.from(byName.values()).sort((a, b) => {
