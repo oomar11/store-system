@@ -134,7 +134,8 @@ export default function MobileHomePage() {
                 is_active: s.is_active,
                 sort_order: s.sort_order ?? undefined,
                 created_at: "",
-              })) as Safe[]
+              })) as Safe[],
+              { dedupeByName: true }
             )
           : [];
 

@@ -14,6 +14,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { canAccess, profileSubject } from "@/lib/permissions";
 import {
   applySafeMovement,
+  fetchSafesForTransfer,
   transferBetweenSafes,
 } from "@/lib/safe-transactions";
 import {
@@ -136,7 +137,8 @@ export default function MobileFinancePage() {
               sort_order: s.sort_order ?? undefined,
               created_at: "",
             }) as Safe
-        )
+        ),
+        { dedupeByName: true }
       );
     }
 
@@ -303,7 +305,9 @@ export default function MobileFinancePage() {
         throw new Error(txRes.error.message || "تعذر تحميل الحركات");
       }
 
-      const nextSafes = normalizeActiveSafes((safesRes.data || []) as Safe[]);
+      const nextSafes = normalizeActiveSafes((safesRes.data || []) as Safe[], {
+        dedupeByName: false,
+      });
       setSafes(nextSafes);
       setSafeId((prevFrom) => {
         const resolved = resolveTransferSafeIds(nextSafes, prevFrom, null);
@@ -427,37 +431,42 @@ export default function MobileFinancePage() {
     setDescription("");
     setPartyId("");
     if (kind === "transfer") {
-      // Prefer live server ids right before transfer — avoids offline ghosts.
-      if (typeof navigator === "undefined" || navigator.onLine !== false) {
-        try {
-          let res = await safesOrderQuery(
-            supabase
-              .from("safes")
-              .select("*")
-              .eq("is_active", true)
-              .is("deleted_at", null)
-          );
-          if (res.error && /deleted_at/i.test(res.error.message || "")) {
-            res = await safesOrderQuery(
-              supabase.from("safes").select("*").eq("is_active", true)
-            );
-          }
-          if (!res.error && res.data?.length) {
-            const live = normalizeActiveSafes(res.data as Safe[]);
-            setSafes(live);
-            const next = resolveTransferSafeIds(live, safeId, toSafeId);
-            setSafeId(next.fromId);
-            setToSafeId(next.toId);
-            setSheet(kind);
-            return;
-          }
-        } catch {
-          /* fall through to local list */
-        }
+      // Transfer pickers must use authoritative server ids only.
+      if (typeof navigator !== "undefined" && navigator.onLine === false) {
+        setFeedError("التحويل بين الخزائن يحتاج اتصال بالإنترنت");
+        return;
       }
-      const next = resolveTransferSafeIds(safes, safeId, toSafeId);
-      setSafeId(next.fromId);
-      setToSafeId(next.toId);
+      try {
+        const live = await fetchSafesForTransfer(supabase);
+        const active = live.filter((s) => s.is_active);
+        if (active.length < 2) {
+          setFeedError("يلزم خزنتان نشطتان على الأقل للتحويل");
+          return;
+        }
+        setFeedError("");
+        setSafes(
+          active.map(
+            (s) =>
+              ({
+                id: s.id,
+                name: s.name,
+                balance: s.balance,
+                is_active: true,
+                created_at: "",
+              }) as Safe
+          )
+        );
+        const next = resolveTransferSafeIds(active, safeId, toSafeId);
+        setSafeId(next.fromId);
+        setToSafeId(next.toId);
+        setSheet(kind);
+        return;
+      } catch (e) {
+        setFeedError(
+          e instanceof Error ? e.message : "تعذر تحميل الخزائن للتحويل"
+        );
+        return;
+      }
     } else if (
       safes.length &&
       !safes.some((s) => String(s.id) === String(safeId))
@@ -868,7 +877,7 @@ export default function MobileFinancePage() {
                           setToSafeId(next.toId);
                         }}
                       >
-                        {s.name}
+                        {s.name} ({formatCurrency(Number(s.balance))})
                       </MobileChip>
                     );
                   })}

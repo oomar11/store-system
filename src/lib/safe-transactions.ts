@@ -1,5 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { logAuditEvent } from "@/lib/audit";
+import {
+  normalizeActiveSafes,
+  normalizeSafeNameKey,
+  safesOrderQuery,
+} from "@/lib/safes-order";
 
 export type SafeMovementType = "deposit" | "withdrawal";
 
@@ -85,25 +90,66 @@ export type TransferBetweenSafesParams = {
   toSafeName?: string | null;
 };
 
-function normalizeSafeLabel(name: string | null | undefined): string {
-  return String(name || "")
-    .trim()
-    .replace(/[\u064B-\u065F\u0670\u0640]/g, "")
-    .replace(/\s+/g, " ")
-    .toLowerCase();
-}
+type LiveSafeRow = {
+  id: string;
+  name: string;
+  is_active: boolean;
+  balance: number;
+};
 
-function pickLiveSafeId(
-  live: { id: string; name: string }[],
+function pickLiveSafe(
+  live: LiveSafeRow[],
   preferredId: string,
   preferredName?: string | null
-): string | null {
+): LiveSafeRow | null {
   const byId = live.find((s) => String(s.id) === preferredId);
-  if (byId) return String(byId.id);
-  const key = normalizeSafeLabel(preferredName);
+  if (byId) return byId;
+  const key = normalizeSafeNameKey(preferredName || "");
   if (!key) return null;
-  const byName = live.find((s) => normalizeSafeLabel(s.name) === key);
-  return byName ? String(byName.id) : null;
+  // Prefer an active match when recovering by name.
+  const matches = live.filter(
+    (s) => normalizeSafeNameKey(s.name) === key
+  );
+  return matches.find((s) => s.is_active) || matches[0] || null;
+}
+
+/** Fetch non-deleted safes for transfer resolution (active + inactive). */
+export async function fetchSafesForTransfer(
+  supabase: SupabaseClient
+): Promise<LiveSafeRow[]> {
+  const selectCols = "id, name, is_active, balance, deleted_at, sort_order";
+  let res = await safesOrderQuery(
+    supabase.from("safes").select(selectCols).is("deleted_at", null)
+  );
+  if (res.error && /deleted_at/i.test(res.error.message || "")) {
+    res = await safesOrderQuery(
+      supabase
+        .from("safes")
+        .select("id, name, is_active, balance, sort_order")
+    );
+  }
+  if (res.error) {
+    throw new Error(res.error.message || "تعذر تحميل الخزائن");
+  }
+
+  return normalizeActiveSafes(
+    (res.data || []).map((s) => ({
+      id: String(s.id),
+      name: String(s.name || ""),
+      is_active: (s as { is_active?: boolean }).is_active !== false,
+      balance: Number((s as { balance?: number }).balance) || 0,
+      sort_order:
+        (s as { sort_order?: number | null }).sort_order ?? undefined,
+      deleted_at:
+        (s as { deleted_at?: string | null }).deleted_at ?? null,
+    })),
+    { dedupeByName: false, includeInactive: true }
+  ).map((s) => ({
+    id: String(s.id),
+    name: String(s.name || ""),
+    is_active: s.is_active !== false,
+    balance: Number(s.balance) || 0,
+  }));
 }
 
 export async function transferBetweenSafes(
@@ -122,51 +168,45 @@ export async function transferBetweenSafes(
     throw new Error("اختر خزنتين مختلفتين للتحويل");
   }
 
-  // Always resolve against the live server list — mobile often keeps stale
-  // offline/ghost ids in select state after a refresh or name-dedupe.
-  const liveQuery = supabase
-    .from("safes")
-    .select("id, name, is_active, deleted_at")
-    .eq("is_active", true);
-  // deleted_at exists after local-first migration; ignore filter errors on older DBs.
-  const liveAttempt = await liveQuery.is("deleted_at", null);
-  const liveRes =
-    liveAttempt.error && /deleted_at/i.test(liveAttempt.error.message || "")
-      ? await supabase
-          .from("safes")
-          .select("id, name, is_active")
-          .eq("is_active", true)
-      : liveAttempt;
-
-  if (liveRes.error) {
-    throw new Error(liveRes.error.message || "تعذر التحقق من الخزائن");
+  const live = await fetchSafesForTransfer(supabase);
+  if (live.filter((s) => s.is_active).length < 2 && live.length < 2) {
+    throw new Error("يلزم خزنتان على الأقل للتحويل");
   }
 
-  const live = (liveRes.data || []).map((s) => ({
-    id: String(s.id),
-    name: String(s.name || ""),
-  }));
-  if (live.length < 2) {
-    throw new Error("يلزم خزنتان نشطتان على الأقل للتحويل");
-  }
+  const fromRow = pickLiveSafe(live, fromSafeId, params.fromSafeName);
+  const toRow = pickLiveSafe(live, toSafeId, params.toSafeName);
 
-  const resolvedFrom = pickLiveSafeId(live, fromSafeId, params.fromSafeName);
-  const resolvedTo = pickLiveSafeId(live, toSafeId, params.toSafeName);
-  if (!resolvedFrom) {
+  if (!fromRow) {
     throw new Error(
-      "الخزنة المصدر غير موجودة — حدّث الصفحة واختر الخزنة من جديد"
+      params.fromSafeName
+        ? `الخزنة المصدر «${params.fromSafeName}» غير موجودة على السيرفر — حدّث الصفحة`
+        : "الخزنة المصدر غير موجودة — حدّث الصفحة واختر الخزنة من جديد"
     );
   }
-  if (!resolvedTo) {
+  if (!toRow) {
     throw new Error(
-      "الخزنة الهدف غير موجودة — حدّث الصفحة واختر الخزنة من جديد"
+      params.toSafeName
+        ? `الخزنة الهدف «${params.toSafeName}» غير موجودة على السيرفر — حدّث الصفحة`
+        : "الخزنة الهدف غير موجودة — حدّث الصفحة واختر الخزنة من جديد"
     );
   }
-  if (resolvedFrom === resolvedTo) {
+  if (fromRow.id === toRow.id) {
     throw new Error("اختر خزنتين مختلفتين للتحويل");
   }
-  fromSafeId = resolvedFrom;
-  toSafeId = resolvedTo;
+  if (fromRow.is_active === false) {
+    throw new Error(`الخزنة المصدر «${fromRow.name}» موقوفة`);
+  }
+  if (toRow.is_active === false) {
+    throw new Error(`الخزنة الهدف «${toRow.name}» موقوفة — فعّلها من الخزينة أولاً`);
+  }
+  if (Number(fromRow.balance) < amount) {
+    throw new Error(
+      `رصيد «${fromRow.name}» غير كافٍ (المتاح ${Number(fromRow.balance).toLocaleString("ar-EG")})`
+    );
+  }
+
+  fromSafeId = fromRow.id;
+  toSafeId = toRow.id;
 
   const { error } = await supabase.rpc("transfer_between_safes", {
     p_from_safe_id: fromSafeId,
