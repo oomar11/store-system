@@ -1,7 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { logAuditEvent } from "@/lib/audit";
 import {
-  normalizeActiveSafes,
   normalizeSafeNameKey,
   safesOrderQuery,
 } from "@/lib/safes-order";
@@ -95,61 +94,86 @@ type LiveSafeRow = {
   name: string;
   is_active: boolean;
   balance: number;
+  deleted_at?: string | null;
 };
+
+function sameSafeId(a: string, b: string): boolean {
+  return String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+}
 
 function pickLiveSafe(
   live: LiveSafeRow[],
   preferredId: string,
-  preferredName?: string | null
+  preferredName?: string | null,
+  excludeId?: string | null
 ): LiveSafeRow | null {
-  const byId = live.find((s) => String(s.id) === preferredId);
+  const pool = excludeId
+    ? live.filter((s) => !sameSafeId(s.id, excludeId))
+    : live;
+  const byId = pool.find((s) => sameSafeId(s.id, preferredId));
   if (byId) return byId;
   const key = normalizeSafeNameKey(preferredName || "");
   if (!key) return null;
-  // Prefer an active match when recovering by name.
-  const matches = live.filter(
+  const matches = pool.filter(
     (s) => normalizeSafeNameKey(s.name) === key
   );
-  return matches.find((s) => s.is_active) || matches[0] || null;
+  // Prefer a non-deleted active match when recovering by name.
+  return (
+    matches.find((s) => !s.deleted_at && s.is_active) ||
+    matches.find((s) => !s.deleted_at) ||
+    matches[0] ||
+    null
+  );
 }
 
-/** Fetch non-deleted safes for transfer resolution (active + inactive). */
+/** Fetch safes for transfer resolution (includes soft-deleted for recovery). */
 export async function fetchSafesForTransfer(
   supabase: SupabaseClient
 ): Promise<LiveSafeRow[]> {
   const selectCols = "id, name, is_active, balance, deleted_at, sort_order";
-  let res = await safesOrderQuery(
-    supabase.from("safes").select(selectCols).is("deleted_at", null)
+  const res = await safesOrderQuery(
+    supabase.from("safes").select(selectCols)
   );
-  if (res.error && /deleted_at/i.test(res.error.message || "")) {
-    res = await safesOrderQuery(
-      supabase
-        .from("safes")
-        .select("id, name, is_active, balance, sort_order")
-    );
-  }
   if (res.error) {
     throw new Error(res.error.message || "تعذر تحميل الخزائن");
   }
 
-  return normalizeActiveSafes(
-    (res.data || []).map((s) => ({
-      id: String(s.id),
-      name: String(s.name || ""),
-      is_active: (s as { is_active?: boolean }).is_active !== false,
-      balance: Number((s as { balance?: number }).balance) || 0,
-      sort_order:
-        (s as { sort_order?: number | null }).sort_order ?? undefined,
+  // Keep every distinct id — including soft-deleted — so we can revive/remap.
+  const byId = new Map<string, LiveSafeRow>();
+  for (const raw of res.data || []) {
+    const id = String(raw.id || "").trim();
+    if (!id) continue;
+    byId.set(id.toLowerCase(), {
+      id,
+      name: String(raw.name || ""),
+      is_active: (raw as { is_active?: boolean }).is_active !== false,
+      balance: Number((raw as { balance?: number }).balance) || 0,
       deleted_at:
-        (s as { deleted_at?: string | null }).deleted_at ?? null,
-    })),
-    { dedupeByName: false, includeInactive: true }
-  ).map((s) => ({
-    id: String(s.id),
-    name: String(s.name || ""),
-    is_active: s.is_active !== false,
-    balance: Number(s.balance) || 0,
-  }));
+        (raw as { deleted_at?: string | null }).deleted_at ?? null,
+    });
+  }
+  return Array.from(byId.values()).sort((a, b) =>
+    a.name.localeCompare(b.name, "ar")
+  );
+}
+
+async function ensureSafeUsable(
+  supabase: SupabaseClient,
+  row: LiveSafeRow
+): Promise<LiveSafeRow> {
+  // RPC is SECURITY DEFINER and only checks row existence — same as desktop.
+  // Soft-deleted / inactive vaults must still transfer (common for الرئيسية/المحل).
+  if (row.deleted_at || row.is_active === false) {
+    const { error } = await supabase
+      .from("safes")
+      .update({ deleted_at: null, is_active: true })
+      .eq("id", row.id);
+    if (!error) {
+      return { ...row, deleted_at: null, is_active: true };
+    }
+    // Non-managers may lack UPDATE — still proceed; RPC can move cash / migration revives.
+  }
+  return row;
 }
 
 export async function transferBetweenSafes(
@@ -159,22 +183,47 @@ export async function transferBetweenSafes(
   const amount = Number(params.amount) || 0;
   if (amount <= 0) return;
 
-  let fromSafeId = String(params.fromSafeId || "").trim();
-  let toSafeId = String(params.toSafeId || "").trim();
-  if (!fromSafeId || !toSafeId) {
+  const rawFromId = String(params.fromSafeId || "").trim();
+  const rawToId = String(params.toSafeId || "").trim();
+  if (!rawFromId || !rawToId) {
     throw new Error("اختر خزنتين مختلفتين للتحويل");
   }
-  if (fromSafeId === toSafeId) {
+  if (sameSafeId(rawFromId, rawToId)) {
     throw new Error("اختر خزنتين مختلفتين للتحويل");
   }
 
   const live = await fetchSafesForTransfer(supabase);
-  if (live.filter((s) => s.is_active).length < 2 && live.length < 2) {
+  const activeLive = live.filter((s) => !s.deleted_at && s.is_active);
+  if (activeLive.length < 2 && live.filter((s) => !s.deleted_at).length < 2) {
     throw new Error("يلزم خزنتان على الأقل للتحويل");
   }
 
-  const fromRow = pickLiveSafe(live, fromSafeId, params.fromSafeName);
-  const toRow = pickLiveSafe(live, toSafeId, params.toSafeName);
+  // Resolve independently; never let name-fallback collapse both sides to one row.
+  let fromRow = pickLiveSafe(live, rawFromId, params.fromSafeName);
+  let toRow = pickLiveSafe(
+    live,
+    rawToId,
+    params.toSafeName,
+    fromRow?.id || rawFromId
+  );
+
+  // Second chance: if to/from still missing, try name against full list excluding the other.
+  if (!fromRow) {
+    fromRow = pickLiveSafe(
+      live,
+      rawFromId,
+      params.fromSafeName,
+      toRow?.id || rawToId
+    );
+  }
+  if (!toRow) {
+    toRow = pickLiveSafe(
+      live,
+      rawToId,
+      params.toSafeName,
+      fromRow?.id || rawFromId
+    );
+  }
 
   if (!fromRow) {
     throw new Error(
@@ -190,23 +239,17 @@ export async function transferBetweenSafes(
         : "الخزنة الهدف غير موجودة — حدّث الصفحة واختر الخزنة من جديد"
     );
   }
-  if (fromRow.id === toRow.id) {
-    throw new Error("اختر خزنتين مختلفتين للتحويل");
-  }
-  if (fromRow.is_active === false) {
-    throw new Error(`الخزنة المصدر «${fromRow.name}» موقوفة`);
-  }
-  if (toRow.is_active === false) {
-    throw new Error(`الخزنة الهدف «${toRow.name}» موقوفة — فعّلها من الخزينة أولاً`);
-  }
-  if (Number(fromRow.balance) < amount) {
+  if (sameSafeId(fromRow.id, toRow.id)) {
     throw new Error(
-      `رصيد «${fromRow.name}» غير كافٍ (المتاح ${Number(fromRow.balance).toLocaleString("ar-EG")})`
+      `«${fromRow.name}» و«${params.toSafeName || toRow.name}» يشيران لنفس الخزنة على السيرفر — حدّث الصفحة`
     );
   }
 
-  fromSafeId = fromRow.id;
-  toSafeId = toRow.id;
+  fromRow = await ensureSafeUsable(supabase, fromRow);
+  toRow = await ensureSafeUsable(supabase, toRow);
+
+  const fromSafeId = fromRow.id;
+  const toSafeId = toRow.id;
 
   const { error } = await supabase.rpc("transfer_between_safes", {
     p_from_safe_id: fromSafeId,

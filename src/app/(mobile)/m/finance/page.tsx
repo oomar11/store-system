@@ -109,6 +109,9 @@ export default function MobileFinancePage() {
   const [toSafeId, setToSafeId] = useState("");
   const [expenseAccountId, setExpenseAccountId] = useState("");
   const [partyId, setPartyId] = useState("");
+  const [transferStatusById, setTransferStatusById] = useState<
+    Record<string, "deleted" | "inactive" | "">
+  >({});
 
   const load = useCallback(async () => {
     // Do NOT gate on OfflineProvider probe — it often marks the app offline
@@ -438,14 +441,24 @@ export default function MobileFinancePage() {
       }
       try {
         const live = await fetchSafesForTransfer(supabase);
-        const active = live.filter((s) => s.is_active);
-        if (active.length < 2) {
-          setFeedError("يلزم خزنتان نشطتان على الأقل للتحويل");
+        // Match desktop treasury: every server vault is selectable for transfer,
+        // including inactive / soft-deleted (RPC only needs the row to exist).
+        if (live.length < 2) {
+          setFeedError("يلزم خزنتان على الأقل للتحويل");
           return;
         }
         setFeedError("");
+        const status: Record<string, "deleted" | "inactive" | ""> = {};
+        for (const s of live) {
+          status[s.id] = s.deleted_at
+            ? "deleted"
+            : s.is_active === false
+              ? "inactive"
+              : "";
+        }
+        setTransferStatusById(status);
         setSafes(
-          active.map(
+          live.map(
             (s) =>
               ({
                 id: s.id,
@@ -456,7 +469,7 @@ export default function MobileFinancePage() {
               }) as Safe
           )
         );
-        const next = resolveTransferSafeIds(active, safeId, toSafeId);
+        const next = resolveTransferSafeIds(live, safeId, toSafeId);
         setSafeId(next.fromId);
         setToSafeId(next.toId);
         setSheet(kind);
@@ -858,69 +871,82 @@ export default function MobileFinancePage() {
               <label>
                 {sheet === "transfer" ? "من خزنة" : "الخزنة"}
               </label>
-              {sheet === "transfer" ? (
-                <div className="mobile-chip-row" style={{ flexWrap: "wrap" }}>
-                  {safes.map((s) => {
-                    const id = String(s.id);
-                    const active = id === String(selectedSafeId);
-                    return (
-                      <MobileChip
-                        key={`from-${id}`}
-                        active={active}
-                        onClick={() => {
-                          setSafeId(id);
-                          const next = resolveTransferSafeIds(
-                            safes,
-                            id,
-                            toSafeId
-                          );
-                          setToSafeId(next.toId);
-                        }}
-                      >
-                        {s.name} ({formatCurrency(Number(s.balance))})
-                      </MobileChip>
+              <select
+                value={selectedSafeId}
+                onChange={(e) => {
+                  const nextFrom = e.target.value;
+                  setSafeId(nextFrom);
+                  if (sheet === "transfer") {
+                    const next = resolveTransferSafeIds(
+                      safes,
+                      nextFrom,
+                      toSafeId
                     );
-                  })}
-                </div>
-              ) : (
-                <select
-                  value={selectedSafeId}
-                  onChange={(e) => setSafeId(e.target.value)}
-                >
-                  {safes.map((s) => (
+                    setToSafeId(next.toId);
+                  }
+                }}
+              >
+                {safes.map((s) => {
+                  const st = transferStatusById[String(s.id)];
+                  const tag =
+                    st === "deleted"
+                      ? " — محذوفة"
+                      : st === "inactive"
+                        ? " — موقوفة"
+                        : "";
+                  return (
                     <option key={String(s.id)} value={String(s.id)}>
-                      {s.name} ({formatCurrency(Number(s.balance))})
+                      {s.name}
+                      {tag} ({formatCurrency(Number(s.balance))})
                     </option>
-                  ))}
-                </select>
-              )}
+                  );
+                })}
+              </select>
             </div>
 
             {sheet === "transfer" && (
               <div className="mobile-field">
                 <label>إلى خزنة</label>
-                <div className="mobile-chip-row" style={{ flexWrap: "wrap" }}>
+                <select
+                  value={selectedToSafeId}
+                  onChange={(e) => setToSafeId(e.target.value)}
+                >
+                  <option value="" disabled>
+                    اختر الوجهة
+                  </option>
                   {safes
                     .filter((s) => String(s.id) !== String(selectedSafeId))
                     .map((s) => {
-                      const id = String(s.id);
-                      const active = id === String(selectedToSafeId);
+                      const st = transferStatusById[String(s.id)];
+                      const tag =
+                        st === "deleted"
+                          ? " — محذوفة"
+                          : st === "inactive"
+                            ? " — موقوفة"
+                            : "";
                       return (
-                        <MobileChip
-                          key={`to-${id}`}
-                          active={active}
-                          onClick={() => setToSafeId(id)}
-                        >
-                          {s.name} ({formatCurrency(Number(s.balance))})
-                        </MobileChip>
+                        <option key={String(s.id)} value={String(s.id)}>
+                          {s.name}
+                          {tag} ({formatCurrency(Number(s.balance))})
+                        </option>
                       );
                     })}
-                </div>
-                {!selectedToSafeId ? (
+                </select>
+                {selectedSafeId && selectedToSafeId ? (
+                  <p className="mt-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900">
+                    سيتم التحويل من «
+                    {safes.find((s) => String(s.id) === String(selectedSafeId))
+                      ?.name || "—"}
+                    » إلى «
+                    {safes.find((s) => String(s.id) === String(selectedToSafeId))
+                      ?.name || "—"}
+                    »
+                  </p>
+                ) : (
                   <p className="mt-2 text-xs font-semibold text-[var(--danger)]">
                     اختر خزنة الوجهة
                   </p>
-                ) : null}
+                )}
               </div>
             )}
 
