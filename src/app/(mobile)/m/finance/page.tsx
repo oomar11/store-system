@@ -15,7 +15,6 @@ import { canAccess, profileSubject } from "@/lib/permissions";
 import {
   applySafeMovement,
   fetchSafesForTransfer,
-  transferBetweenSafes,
 } from "@/lib/safe-transactions";
 import {
   ensureExpenseAccounts,
@@ -516,14 +515,24 @@ export default function MobileFinancePage() {
         const toSafe = safes.find(
           (s) => String(s.id) === String(selectedToSafeId)
         );
-        await transferBetweenSafes(supabase, {
-          fromSafeId: selectedSafeId,
-          toSafeId: selectedToSafeId,
-          amount: value,
-          description: description || "تحويل بين الخزائن",
-          fromSafeName: fromSafe?.name,
-          toSafeName: toSafe?.name,
+        const res = await fetch("/api/treasury/transfer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fromSafeId: selectedSafeId,
+            toSafeId: selectedToSafeId,
+            fromSafeName: fromSafe?.name || null,
+            toSafeName: toSafe?.name || null,
+            amount: value,
+            description: description || "تحويل بين الخزائن",
+          }),
         });
+        const payload = (await res.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        if (!res.ok) {
+          throw new Error(payload.error || "تعذر إتمام التحويل بين الخزائن");
+        }
       } else if (sheet === "expense") {
         if (!canExpenses) throw new Error("لا تملك صلاحية المصروفات");
         if (!selectedSafeId) throw new Error("اختر خزنة");
