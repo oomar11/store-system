@@ -49,6 +49,51 @@ function digitsMatch(a: string, b: string): boolean {
   return aa.length >= 9 && bb.length >= 9 && aa.slice(-9) === bb.slice(-9);
 }
 
+/**
+ * Find an active party by phone using a targeted query (not a 50-row scan).
+ * Never matches by name — common names like «عمر» must not auto-merge.
+ */
+async function findPartyIdByPhone(
+  client: SupabaseClient,
+  table: "customers" | "suppliers",
+  phoneNorm: string
+): Promise<string | null> {
+  if (!phoneNorm || phoneNorm.length < 9) return null;
+  const last9 = phoneNorm.slice(-9);
+  const { data, error } = await client
+    .from(table)
+    .select("id, phone, phone_normalized")
+    .eq("is_active", true)
+    .or(
+      `phone_normalized.ilike.%${last9}%,phone.ilike.%${last9}%`
+    )
+    .limit(200);
+  if (error) {
+    // Fallback: broader fetch if phone_normalized column missing
+    if (/phone_normalized/i.test(error.message || "")) {
+      const retry = await client
+        .from(table)
+        .select("id, phone")
+        .eq("is_active", true)
+        .ilike("phone", `%${last9}%`)
+        .limit(200);
+      if (retry.error) throw new Error(retry.error.message);
+      const hit = (retry.data || []).find((row) =>
+        digitsMatch(normalizePartyPhone(row.phone), phoneNorm)
+      );
+      return hit?.id || null;
+    }
+    throw new Error(error.message);
+  }
+  const hit = (data || []).find((row) =>
+    digitsMatch(
+      normalizePartyPhone(row.phone_normalized || row.phone),
+      phoneNorm
+    )
+  );
+  return hit?.id || null;
+}
+
 export async function searchStoreParties(
   client: SupabaseClient,
   kind: PartyKind,
@@ -172,33 +217,10 @@ export async function upsertWorkshopParty(
     }
   }
 
-  // 2) Match by phone then exact name
-  let matchId: string | null = null;
-  if (phoneNorm) {
-    const { data: byPhone } = await client
-      .from(table)
-      .select("id, phone, phone_normalized")
-      .eq("is_active", true)
-      .limit(50);
-    const hit = (byPhone || []).find((row) =>
-      digitsMatch(
-        normalizePartyPhone(row.phone_normalized || row.phone),
-        phoneNorm
-      )
-    );
-    if (hit) matchId = hit.id;
-  }
-
-  if (!matchId) {
-    const { data: byName } = await client
-      .from(table)
-      .select("id")
-      .eq("is_active", true)
-      .ilike("name", name)
-      .limit(1)
-      .maybeSingle();
-    if (byName?.id) matchId = byName.id;
-  }
+  // 2) Match by phone only — never by name (avoids merging every «عمر»).
+  const matchId = phoneNorm
+    ? await findPartyIdByPhone(client, table, phoneNorm)
+    : null;
 
   let party: StorePartyRow;
   let created = false;
@@ -913,4 +935,342 @@ export async function buildUnifiedCustomerStatement(
     customer: customer as StorePartyRow,
     linked_supplier: linkedSupplier,
   };
+}
+
+export type WorkshopPartyMapRow = {
+  id: string;
+  source_system: WorkshopSourceSystem;
+  party_type: PartyKind;
+  local_party_id: string;
+  store_party_id: string;
+  updated_at: string | null;
+  ledger_with_details: number;
+  ledger_total_on_party: number;
+};
+
+function entryBelongsToLocalParty(
+  entry: {
+    source_system: string;
+    details: Record<string, unknown> | null;
+  },
+  sourceSystem: WorkshopSourceSystem,
+  localPartyId: string
+): boolean {
+  if (String(entry.source_system || "").toLowerCase() !== sourceSystem) {
+    return false;
+  }
+  const details = entry.details;
+  if (!details || typeof details !== "object") return false;
+  const candidates = [
+    details.local_party_id,
+    details.customer_id,
+    details.local_customer_id,
+  ];
+  return candidates.some(
+    (v) => v != null && String(v).trim() === localPartyId
+  );
+}
+
+/** List workshop_party_map rows pointing at a store customer/supplier. */
+export async function listWorkshopPartyMapsForStoreParty(
+  client: SupabaseClient,
+  params: { storePartyId: string; partyType?: PartyKind }
+): Promise<WorkshopPartyMapRow[]> {
+  const storePartyId = String(params.storePartyId || "").trim();
+  if (!storePartyId) return [];
+  const partyType = params.partyType || "customer";
+
+  const { data: maps, error } = await client
+    .from("workshop_party_map")
+    .select(
+      "id, source_system, party_type, local_party_id, store_party_id, updated_at"
+    )
+    .eq("store_party_id", storePartyId)
+    .eq("party_type", partyType)
+    .order("updated_at", { ascending: false });
+  if (error) throw new Error(error.message || "تعذر قراءة روابط الورشة");
+
+  const { data: ledgerRows, error: ledgerErr } = await client
+    .from("cross_app_ledger_entries")
+    .select("id, source_system, details")
+    .eq("party_type", partyType)
+    .eq("party_id", storePartyId);
+  if (ledgerErr && !/details/i.test(ledgerErr.message || "")) {
+    throw new Error(ledgerErr.message || "تعذر قراءة دفتر الجسر");
+  }
+
+  const ledger = (ledgerRows || []) as Array<{
+    id: string;
+    source_system: string;
+    details: Record<string, unknown> | null;
+  }>;
+
+  return (maps || []).map((m) => {
+    const sourceSystem = String(m.source_system || "").toLowerCase() as WorkshopSourceSystem;
+    const localId = String(m.local_party_id || "");
+    const withDetails = ledger.filter((e) =>
+      entryBelongsToLocalParty(e, sourceSystem, localId)
+    ).length;
+    return {
+      id: String(m.id),
+      source_system: sourceSystem,
+      party_type: (m.party_type === "supplier" ? "supplier" : "customer") as PartyKind,
+      local_party_id: localId,
+      store_party_id: String(m.store_party_id),
+      updated_at: (m.updated_at as string | null) || null,
+      ledger_with_details: withDetails,
+      ledger_total_on_party: ledger.filter(
+        (e) => String(e.source_system || "").toLowerCase() === sourceSystem
+      ).length,
+    };
+  });
+}
+
+/**
+ * Detach one workshop local party from a merged store party:
+ * create a new store party, remap workshop_party_map, move ledger rows
+ * that carry details.local_party_id / customer_id (and all rows from that
+ * source_system when this is the only map for it).
+ */
+export async function splitWorkshopPartyMapLink(
+  client: SupabaseClient,
+  params: {
+    storePartyId: string;
+    sourceSystem: WorkshopSourceSystem;
+    localPartyId: string;
+    partyType?: PartyKind;
+    newName?: string | null;
+  }
+): Promise<{
+  newParty: StorePartyRow;
+  movedEntries: number;
+  mapUpdated: boolean;
+  warning: string | null;
+}> {
+  const storePartyId = String(params.storePartyId || "").trim();
+  const localPartyId = String(params.localPartyId || "").trim();
+  const sourceSystem = params.sourceSystem;
+  const partyType = params.partyType || "customer";
+  if (!storePartyId) throw new Error("store_party_id مطلوب");
+  if (!localPartyId) throw new Error("local_party_id مطلوب");
+  if (sourceSystem !== "aa" && sourceSystem !== "plisse") {
+    throw new Error("source_system غير صالح");
+  }
+
+  const table = partyType === "customer" ? "customers" : "suppliers";
+
+  const { data: mapRow, error: mapErr } = await client
+    .from("workshop_party_map")
+    .select("id, store_party_id")
+    .eq("source_system", sourceSystem)
+    .eq("party_type", partyType)
+    .eq("local_party_id", localPartyId)
+    .maybeSingle();
+  if (mapErr) throw new Error(mapErr.message);
+  if (!mapRow || String(mapRow.store_party_id) !== storePartyId) {
+    throw new Error("الرابط غير موجود على هذا العميل");
+  }
+
+  const { data: oldParty, error: oldErr } = await client
+    .from(table)
+    .select("id, name, phone, address, notes, balance, is_active, created_at")
+    .eq("id", storePartyId)
+    .single();
+  if (oldErr || !oldParty) throw new Error(oldErr?.message || "العميل غير موجود");
+
+  const newName =
+    String(params.newName || "").trim() ||
+    `${oldParty.name} · ورشة ${localPartyId.slice(0, 6)}`;
+
+  const { data: created, error: createErr } = await client
+    .from(table)
+    .insert({
+      name: newName,
+      phone: oldParty.phone,
+      address: oldParty.address,
+      notes: [
+        String(oldParty.notes || "").trim(),
+        `فصل من دمج جسر (${sourceSystem}:${localPartyId})`,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      balance: 0,
+      opening_balance: 0,
+      is_active: true,
+    })
+    .select("id, name, phone, address, notes, balance, is_active, created_at")
+    .single();
+  if (createErr || !created) {
+    throw new Error(createErr?.message || "تعذر إنشاء عميل جديد");
+  }
+  const newParty = created as StorePartyRow;
+
+  const { error: remapErr } = await client
+    .from("workshop_party_map")
+    .update({
+      store_party_id: newParty.id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", mapRow.id);
+  if (remapErr) throw new Error(remapErr.message);
+
+  // How many maps remain on the old party for this source_system?
+  const { data: siblingMaps, error: sibErr } = await client
+    .from("workshop_party_map")
+    .select("id")
+    .eq("store_party_id", storePartyId)
+    .eq("party_type", partyType)
+    .eq("source_system", sourceSystem);
+  if (sibErr) throw new Error(sibErr.message);
+  const soleMapForSystem = (siblingMaps || []).length === 0;
+
+  let ledgerQ = await client
+    .from("cross_app_ledger_entries")
+    .select(
+      "id, source_system, source_ref, party_type, party_id, entry_type, amount, direction, occurred_at, notes, project_label, details"
+    )
+    .eq("party_type", partyType)
+    .eq("party_id", storePartyId)
+    .eq("source_system", sourceSystem);
+
+  if (ledgerQ.error && /details/i.test(ledgerQ.error.message || "")) {
+    ledgerQ = (await client
+      .from("cross_app_ledger_entries")
+      .select(
+        "id, source_system, source_ref, party_type, party_id, entry_type, amount, direction, occurred_at, notes, project_label"
+      )
+      .eq("party_type", partyType)
+      .eq("party_id", storePartyId)
+      .eq("source_system", sourceSystem)) as typeof ledgerQ;
+  }
+  if (ledgerQ.error) throw new Error(ledgerQ.error.message);
+
+  type MoveRow = {
+    id: string;
+    source_system: string;
+    source_ref: string;
+    party_type: string;
+    party_id: string;
+    entry_type: string;
+    amount: number;
+    direction: string;
+    occurred_at: string | null;
+    notes: string | null;
+    project_label: string | null;
+    details?: Record<string, unknown> | null;
+  };
+
+  const candidates = (ledgerQ.data || []) as MoveRow[];
+  const toMove = candidates.filter((entry) => {
+    if (soleMapForSystem) return true;
+    return entryBelongsToLocalParty(
+      {
+        source_system: entry.source_system,
+        details: entry.details ?? null,
+      },
+      sourceSystem,
+      localPartyId
+    );
+  });
+
+  let moved = 0;
+  for (const entry of toMove) {
+    await applyCrossAppLedgerEntryDirect(client, {
+      sourceSystem,
+      sourceRef: entry.source_ref,
+      partyType,
+      partyId: newParty.id,
+      entryType: entry.entry_type as LedgerEntryInput["entryType"],
+      amount: Number(entry.amount) || 0,
+      direction: entry.direction === "credit" ? "credit" : "debit",
+      occurredAt: entry.occurred_at,
+      notes: entry.notes,
+      projectLabel: entry.project_label,
+      details: {
+        ...(entry.details && typeof entry.details === "object"
+          ? entry.details
+          : {}),
+        local_party_id: localPartyId,
+        split_from_party_id: storePartyId,
+      },
+    });
+    moved += 1;
+  }
+
+  if (partyType === "customer") {
+    await touchCustomerBusinessLines(client, storePartyId, sourceSystem);
+    await touchCustomerBusinessLines(client, newParty.id, sourceSystem);
+  }
+
+  let warning: string | null = null;
+  if (!soleMapForSystem && moved === 0 && candidates.length > 0) {
+    warning =
+      "اتفصل الرابط واتعمل عميل جديد، لكن قيود الدفتر القديمة من غير تفاصيل العميل المحلي — راجع كشف الحساب أو أعد مزامنة الورشة.";
+  } else if (!soleMapForSystem && moved < candidates.length) {
+    warning = `اتنقل ${moved} قيد. باقي قيود ${sourceSystem} على العميل الأصلي ممكن تكون لعملاء ورشة تانيين مربوطين عليه.`;
+  }
+
+  return {
+    newParty,
+    movedEntries: moved,
+    mapUpdated: true,
+    warning,
+  };
+}
+
+/** Find store customers that have more than one workshop map (likely merges). */
+export async function listMergedWorkshopCustomers(
+  client: SupabaseClient,
+  options?: { nameQuery?: string | null; limit?: number }
+): Promise<
+  Array<{
+    store_party_id: string;
+    name: string;
+    phone: string | null;
+    map_count: number;
+    maps: WorkshopPartyMapRow[];
+  }>
+> {
+  const limit = Math.min(50, Math.max(1, options?.limit || 20));
+  const nameQuery = String(options?.nameQuery || "").trim();
+
+  let custQ = client
+    .from("customers")
+    .select("id, name, phone")
+    .eq("is_active", true)
+    .order("name")
+    .limit(200);
+  if (nameQuery) {
+    custQ = custQ.ilike("name", `%${nameQuery}%`);
+  }
+  const { data: customers, error: custErr } = await custQ;
+  if (custErr) throw new Error(custErr.message);
+
+  const results: Array<{
+    store_party_id: string;
+    name: string;
+    phone: string | null;
+    map_count: number;
+    maps: WorkshopPartyMapRow[];
+  }> = [];
+
+  for (const c of customers || []) {
+    const maps = await listWorkshopPartyMapsForStoreParty(client, {
+      storePartyId: String(c.id),
+      partyType: "customer",
+    });
+    if (maps.length < 2 && !nameQuery) continue;
+    if (maps.length === 0) continue;
+    results.push({
+      store_party_id: String(c.id),
+      name: String(c.name || ""),
+      phone: (c.phone as string | null) || null,
+      map_count: maps.length,
+      maps,
+    });
+    if (results.length >= limit) break;
+  }
+
+  results.sort((a, b) => b.map_count - a.map_count);
+  return results;
 }

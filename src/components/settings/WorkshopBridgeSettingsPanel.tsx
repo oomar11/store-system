@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Copy, KeyRound, Loader2, RefreshCw } from "lucide-react";
+import { Copy, KeyRound, Loader2, RefreshCw, Unlink } from "lucide-react";
 import { SettingsCard } from "@/components/settings/SettingsCard";
 import { useToast } from "@/components/ui/Toast";
 
@@ -13,12 +13,33 @@ type BridgeStatus = {
   hint: string;
 };
 
+type MapRow = {
+  id: string;
+  source_system: "aa" | "plisse";
+  local_party_id: string;
+  store_party_id: string;
+  ledger_with_details: number;
+  ledger_total_on_party: number;
+};
+
+type MergedCustomer = {
+  store_party_id: string;
+  name: string;
+  phone: string | null;
+  map_count: number;
+  maps: MapRow[];
+};
+
 export function WorkshopBridgeSettingsPanel() {
   const { success: toastSuccess, error: toastError } = useToast();
   const [status, setStatus] = useState<BridgeStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [revealed, setRevealed] = useState("");
   const [manual, setManual] = useState("");
+  const [mergeQuery, setMergeQuery] = useState("عمر");
+  const [merged, setMerged] = useState<MergedCustomer[]>([]);
+  const [mergeBusy, setMergeBusy] = useState(false);
+  const [splitBusyKey, setSplitBusyKey] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -105,6 +126,73 @@ export function WorkshopBridgeSettingsPanel() {
       toastError(e instanceof Error ? e.message : "فشل إصلاح دفتر الجسر");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function loadMerged() {
+    setMergeBusy(true);
+    try {
+      const q = mergeQuery.trim();
+      const path = q
+        ? `/api/workshop/party-maps?q=${encodeURIComponent(q)}`
+        : "/api/workshop/party-maps";
+      const res = await fetch(path, { cache: "no-store" });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        customers?: MergedCustomer[];
+      };
+      if (!res.ok || !json.ok) {
+        throw new Error(json.error || "فشل تحميل الروابط");
+      }
+      setMerged(json.customers || []);
+      if (!(json.customers || []).length) {
+        toastSuccess("مفيش عملاء مطابقين للبحث / أو مفيش دمج متعدد");
+      }
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "فشل تحميل الروابط");
+    } finally {
+      setMergeBusy(false);
+    }
+  }
+
+  async function splitLink(customer: MergedCustomer, map: MapRow) {
+    const ok = window.confirm(
+      `فصل رابط ${map.source_system} / ${map.local_party_id.slice(0, 8)} عن «${customer.name}»؟\nهيتعمل عميل محل جديد وتنتقل القيود المعرّفة.`
+    );
+    if (!ok) return;
+    const key = `${map.source_system}:${map.local_party_id}`;
+    setSplitBusyKey(key);
+    try {
+      const res = await fetch("/api/workshop/party-maps", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "split",
+          store_party_id: customer.store_party_id,
+          source_system: map.source_system,
+          local_party_id: map.local_party_id,
+        }),
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        moved_entries?: number;
+        new_customer_id?: string;
+        warning?: string | null;
+      };
+      if (!res.ok || !json.ok) {
+        throw new Error(json.error || "فشل فصل الرابط");
+      }
+      toastSuccess(
+        `اتفصل الرابط — اتنقل ${json.moved_entries || 0} قيد إلى عميل جديد`
+      );
+      if (json.warning) toastError(json.warning);
+      await loadMerged();
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "فشل فصل الرابط");
+    } finally {
+      setSplitBusyKey("");
     }
   }
 
@@ -262,6 +350,105 @@ export function WorkshopBridgeSettingsPanel() {
           >
             حفظ المفتاح
           </button>
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-subtle)] px-3 py-3">
+          <p className="text-sm font-bold text-[var(--foreground)]">
+            فصل دمج عملاء الورشة
+          </p>
+          <p className="text-xs leading-5 text-[var(--muted)]">
+            لو مشاريع كتير اتلزقت تحت اسم شائع (زي «عمر») بسبب مطابقة الاسم
+            القديمة: ابحث هنا وافصل الروابط الغلط. كل رابط ورشة يتحول لعميل محل
+            مستقل مع نقل القيود المعرّفة.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <input
+              type="text"
+              value={mergeQuery}
+              onChange={(e) => setMergeQuery(e.target.value)}
+              placeholder="اسم العميل…"
+              className="min-w-[10rem] flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm"
+            />
+            <button
+              type="button"
+              disabled={mergeBusy}
+              onClick={() => void loadMerged()}
+              className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-bold disabled:opacity-60"
+            >
+              {mergeBusy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Unlink className="h-4 w-4" />
+              )}
+              بحث الروابط
+            </button>
+          </div>
+
+          {merged.length > 0 ? (
+            <div className="space-y-3">
+              {merged.map((c) => (
+                <div
+                  key={c.store_party_id}
+                  className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5"
+                >
+                  <p className="text-sm font-bold">
+                    {c.name}{" "}
+                    <span className="text-xs font-normal text-[var(--muted)]">
+                      ({c.map_count} رابط)
+                    </span>
+                  </p>
+                  {c.phone ? (
+                    <p
+                      className="mt-0.5 font-mono text-xs text-[var(--muted)]"
+                      dir="ltr"
+                    >
+                      {c.phone}
+                    </p>
+                  ) : null}
+                  <ul className="mt-2 space-y-1.5">
+                    {c.maps.map((m) => {
+                      const key = `${m.source_system}:${m.local_party_id}`;
+                      const busySplit = splitBusyKey === key;
+                      return (
+                        <li
+                          key={key}
+                          className="flex flex-wrap items-center justify-between gap-2 text-xs"
+                        >
+                          <span dir="ltr" className="font-mono">
+                            {m.source_system} · {m.local_party_id.slice(0, 10)}
+                            …
+                            <span className="text-[var(--muted)]">
+                              {" "}
+                              · قيود مفصّلة {m.ledger_with_details}/
+                              {m.ledger_total_on_party}
+                            </span>
+                          </span>
+                          <button
+                            type="button"
+                            disabled={busySplit || c.maps.length < 2}
+                            title={
+                              c.maps.length < 2
+                                ? "مفيش دمج — رابط واحد فقط"
+                                : "فصل وإنشاء عميل جديد"
+                            }
+                            onClick={() => void splitLink(c, m)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-[var(--border)] px-2.5 py-1.5 font-bold disabled:opacity-40"
+                          >
+                            {busySplit ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Unlink className="h-3.5 w-3.5" />
+                            )}
+                            فصل
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
 
         <p className="text-xs leading-5 text-[var(--muted)]">
