@@ -1218,6 +1218,234 @@ export async function splitWorkshopPartyMapLink(
   };
 }
 
+/**
+ * Emergency repair: strip all workshop maps + void all cross-app ledger
+ * rows on a wrongly-merged store customer so workshops can re-upsert cleanly.
+ * (Name-only merge used to pile unrelated PVC projects onto one party.)
+ */
+export async function resetWronglyMergedStoreCustomer(
+  client: SupabaseClient,
+  params: { storePartyId: string; partyType?: PartyKind }
+): Promise<{
+  mapsDeleted: number;
+  entriesVoided: number;
+  balanceAfter: number;
+  voidedRefs: string[];
+}> {
+  const storePartyId = String(params.storePartyId || "").trim();
+  const partyType = params.partyType || "customer";
+  if (!storePartyId) throw new Error("store_party_id مطلوب");
+
+  const { data: maps, error: mapErr } = await client
+    .from("workshop_party_map")
+    .select("id")
+    .eq("store_party_id", storePartyId)
+    .eq("party_type", partyType);
+  if (mapErr) throw new Error(mapErr.message);
+
+  let mapsDeleted = 0;
+  if ((maps || []).length > 0) {
+    const { error: delMapErr } = await client
+      .from("workshop_party_map")
+      .delete()
+      .eq("store_party_id", storePartyId)
+      .eq("party_type", partyType);
+    if (delMapErr) throw new Error(delMapErr.message);
+    mapsDeleted = maps!.length;
+  }
+
+  const { data: entries, error: entErr } = await client
+    .from("cross_app_ledger_entries")
+    .select("id, source_system, source_ref, entry_type, amount, direction")
+    .eq("party_type", partyType)
+    .eq("party_id", storePartyId);
+  if (entErr) throw new Error(entErr.message);
+
+  const voidedRefs: string[] = [];
+  for (const entry of entries || []) {
+    const sourceSystem = String(entry.source_system || "").toLowerCase();
+    if (sourceSystem !== "aa" && sourceSystem !== "plisse") continue;
+    await applyCrossAppLedgerEntryDirect(client, {
+      sourceSystem: sourceSystem as WorkshopSourceSystem,
+      sourceRef: String(entry.source_ref),
+      partyType,
+      partyId: storePartyId,
+      entryType: "workshop_void",
+      amount: 0,
+      direction: entry.direction === "credit" ? "credit" : "debit",
+      notes: "إصلاح دمج عميل ورشة — إعادة ترحيل",
+    });
+    voidedRefs.push(`${sourceSystem}:${entry.source_ref}`);
+  }
+
+  const table = partyType === "customer" ? "customers" : "suppliers";
+  const { data: party } = await client
+    .from(table)
+    .select("balance")
+    .eq("id", storePartyId)
+    .maybeSingle();
+
+  return {
+    mapsDeleted,
+    entriesVoided: voidedRefs.length,
+    balanceAfter: Number(party?.balance) || 0,
+    voidedRefs,
+  };
+}
+
+/**
+ * Detach each sale:{projectId} (and matching collections by project_label)
+ * onto its own store customer — for cases where maps alone can't split.
+ */
+export async function detachLedgerProjectsToNewCustomers(
+  client: SupabaseClient,
+  params: { storePartyId: string }
+): Promise<{
+  created: Array<{
+    projectKey: string;
+    projectLabel: string;
+    newCustomerId: string;
+    moved: number;
+  }>;
+  leftoverEntries: number;
+}> {
+  const storePartyId = String(params.storePartyId || "").trim();
+  if (!storePartyId) throw new Error("store_party_id مطلوب");
+
+  let ledgerQ = await client
+    .from("cross_app_ledger_entries")
+    .select(
+      "id, source_system, source_ref, entry_type, amount, direction, occurred_at, notes, project_label, details"
+    )
+    .eq("party_type", "customer")
+    .eq("party_id", storePartyId);
+
+  if (ledgerQ.error && /details/i.test(ledgerQ.error.message || "")) {
+    ledgerQ = (await client
+      .from("cross_app_ledger_entries")
+      .select(
+        "id, source_system, source_ref, entry_type, amount, direction, occurred_at, notes, project_label"
+      )
+      .eq("party_type", "customer")
+      .eq("party_id", storePartyId)) as typeof ledgerQ;
+  }
+  if (ledgerQ.error) throw new Error(ledgerQ.error.message);
+
+  type Row = {
+    id: string;
+    source_system: string;
+    source_ref: string;
+    entry_type: string;
+    amount: number;
+    direction: string;
+    occurred_at: string | null;
+    notes: string | null;
+    project_label: string | null;
+    details?: Record<string, unknown> | null;
+  };
+  const rows = (ledgerQ.data || []) as Row[];
+
+  const sales = rows.filter(
+    (r) =>
+      r.entry_type === "workshop_sale" ||
+      (r.entry_type === "workshop_adjustment" && r.direction === "debit")
+  );
+
+  const created: Array<{
+    projectKey: string;
+    projectLabel: string;
+    newCustomerId: string;
+    moved: number;
+  }> = [];
+
+  const movedIds = new Set<string>();
+
+  for (const sale of sales) {
+    const ref = String(sale.source_ref || "");
+    if (!ref.startsWith("sale:") && !ref.startsWith("inv:")) continue;
+    const projectKey = ref.includes(":") ? ref.slice(ref.indexOf(":") + 1) : ref;
+    const label =
+      String(sale.project_label || "").trim() ||
+      String(sale.notes || "")
+        .split("—")[0]
+        ?.trim() ||
+      `مشروع ${projectKey.slice(0, 8)}`;
+
+    const { data: newParty, error: createErr } = await client
+      .from("customers")
+      .insert({
+        name: label,
+        phone: null,
+        notes: `فصل من دمج جسر · ${ref}`,
+        balance: 0,
+        opening_balance: 0,
+        is_active: true,
+      })
+      .select("id, name")
+      .single();
+    if (createErr || !newParty) {
+      throw new Error(createErr?.message || "تعذر إنشاء عميل للمشروع");
+    }
+
+    const related = rows.filter((r) => {
+      if (movedIds.has(r.id)) return false;
+      if (r.id === sale.id) return true;
+      if (String(r.source_ref) === ref) return true;
+      const pl = String(r.project_label || "").trim();
+      if (pl && pl === label) return true;
+      const notes = String(r.notes || "");
+      if (label && notes.includes(label)) return true;
+      const details = r.details;
+      if (details && typeof details === "object") {
+        if (String(details.project_id || "") === projectKey) return true;
+        if (String(details.invoice_id || "") === projectKey) return true;
+      }
+      return false;
+    });
+
+    let moved = 0;
+    for (const entry of related) {
+      const sourceSystem = String(entry.source_system || "").toLowerCase();
+      if (sourceSystem !== "aa" && sourceSystem !== "plisse") continue;
+      await applyCrossAppLedgerEntryDirect(client, {
+        sourceSystem: sourceSystem as WorkshopSourceSystem,
+        sourceRef: String(entry.source_ref),
+        partyType: "customer",
+        partyId: String(newParty.id),
+        entryType: entry.entry_type as LedgerEntryInput["entryType"],
+        amount: Number(entry.amount) || 0,
+        direction: entry.direction === "credit" ? "credit" : "debit",
+        occurredAt: entry.occurred_at,
+        notes: entry.notes,
+        projectLabel: entry.project_label,
+        details: {
+          ...(entry.details && typeof entry.details === "object"
+            ? entry.details
+            : {}),
+          split_from_party_id: storePartyId,
+          project_id:
+            (entry.details as { project_id?: string } | null)?.project_id ||
+            (ref.startsWith("sale:") ? projectKey : undefined),
+        },
+      });
+      movedIds.add(entry.id);
+      moved += 1;
+    }
+
+    created.push({
+      projectKey,
+      projectLabel: label,
+      newCustomerId: String(newParty.id),
+      moved,
+    });
+  }
+
+  return {
+    created,
+    leftoverEntries: rows.filter((r) => !movedIds.has(r.id)).length,
+  };
+}
+
 /** Find store customers that have more than one workshop map (likely merges). */
 export async function listMergedWorkshopCustomers(
   client: SupabaseClient,
