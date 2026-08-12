@@ -92,7 +92,21 @@ function invoiceNumberFromDetails(
   return s || null;
 }
 
-/** Allocate paid amounts FIFO across sale rows (plisse: pays share customer label). */
+function detailString(
+  details: Record<string, unknown> | null,
+  ...keys: string[]
+): string | null {
+  if (!details || typeof details !== "object") return null;
+  for (const key of keys) {
+    const v = details[key];
+    if (v == null) continue;
+    const s = String(v).trim();
+    if (s) return s;
+  }
+  return null;
+}
+
+/** Allocate paid amounts FIFO across sale rows (legacy fallback only). */
 function allocateFifo(targets: Acc[], paidTotal: number) {
   let left = Math.max(0, paidTotal);
   const ordered = [...targets].sort((a, b) => {
@@ -207,9 +221,13 @@ export async function listProjectReceivables(
   }
 
   const byProject = new Map<string, Acc>();
-  /** aa collections keyed by source + party + project_label */
+  /** aa collections keyed by party + project_id (preferred) */
+  const aaCollectionsByProjectId = new Map<string, number>();
+  /** aa collections keyed by source + party + project_label (legacy fallback) */
   const aaCollectionsByLabel = new Map<string, number>();
-  /** plisse collections keyed by party id only (FIFO across invoices) */
+  /** plisse collections keyed by party + invoice_id */
+  const wireCollectionsByInvoiceId = new Map<string, number>();
+  /** plisse collections without invoice_id — FIFO leftover per party */
   const wireCollectionsByParty = new Map<string, number>();
 
   for (const row of ledger) {
@@ -266,33 +284,69 @@ export async function listProjectReceivables(
       const credit = row.direction === "credit" ? amount : 0;
       if (credit <= 0) continue;
       if (source === "wire") {
-        wireCollectionsByParty.set(
-          partyKey,
-          (wireCollectionsByParty.get(partyKey) || 0) + credit
-        );
+        const invoiceId =
+          detailString(row.details, "invoice_id") ||
+          (parsed.kind === "pay" ? null : parsed.kind === "inv" ? parsed.key : null);
+        if (invoiceId) {
+          const key = `${partyKey}::${invoiceId}`;
+          wireCollectionsByInvoiceId.set(
+            key,
+            (wireCollectionsByInvoiceId.get(key) || 0) + credit
+          );
+        } else {
+          wireCollectionsByParty.set(
+            partyKey,
+            (wireCollectionsByParty.get(partyKey) || 0) + credit
+          );
+        }
       } else {
-        // Match aa payments to sales by the raw project_label on the ledger row.
-        const labelKey = `${source}::${partyKey}::${label || "_"}`;
-        aaCollectionsByLabel.set(
-          labelKey,
-          (aaCollectionsByLabel.get(labelKey) || 0) + credit
-        );
+        const projectId = detailString(row.details, "project_id");
+        if (projectId) {
+          const key = `${partyKey}::${projectId}`;
+          aaCollectionsByProjectId.set(
+            key,
+            (aaCollectionsByProjectId.get(key) || 0) + credit
+          );
+        } else {
+          // Legacy: match aa payments to sales by raw project_label.
+          const labelKey = `${source}::${partyKey}::${label || "_"}`;
+          aaCollectionsByLabel.set(
+            labelKey,
+            (aaCollectionsByLabel.get(labelKey) || 0) + credit
+          );
+        }
       }
     }
   }
 
-  // Attach aa collections by project label (same party + exact label only).
+  // Attach aa collections by project_id first, then legacy label.
   for (const acc of byProject.values()) {
     if (acc.source !== "workshop") continue;
+    const idKey = `${acc.customerId}::${acc.projectKey}`;
+    const byId = aaCollectionsByProjectId.get(idKey) || 0;
+    if (byId > 0) {
+      acc.paid += byId;
+      aaCollectionsByProjectId.delete(idKey);
+    }
     const labelKey = `workshop::${acc.customerId}::${acc.matchLabel || "_"}`;
-    const paid = aaCollectionsByLabel.get(labelKey) || 0;
-    if (paid > 0) {
-      acc.paid += paid;
+    const byLabel = aaCollectionsByLabel.get(labelKey) || 0;
+    if (byLabel > 0) {
+      acc.paid += byLabel;
       aaCollectionsByLabel.delete(labelKey);
     }
   }
 
-  // Plisse: FIFO allocate collections across invoice sales per customer
+  // Plisse: attach by invoice_id, then FIFO leftover without invoice_id.
+  for (const acc of byProject.values()) {
+    if (acc.source !== "wire") continue;
+    const idKey = `${acc.customerId}::${acc.projectKey}`;
+    const byId = wireCollectionsByInvoiceId.get(idKey) || 0;
+    if (byId > 0) {
+      acc.paid += byId;
+      wireCollectionsByInvoiceId.delete(idKey);
+    }
+  }
+
   const wireByParty = new Map<string, Acc[]>();
   for (const acc of byProject.values()) {
     if (acc.source !== "wire") continue;
@@ -317,7 +371,49 @@ export async function listProjectReceivables(
     }
   }
 
-  // Orphan aa collections
+  // Orphan plisse collections with invoice_id but no matching sale
+  for (const [idKey, paid] of wireCollectionsByInvoiceId.entries()) {
+    if (paid <= 0) continue;
+    const parts = idKey.split("::");
+    const cid = parts[0] || "";
+    const invId = parts[1] || "";
+    if (customerId && cid !== customerId) continue;
+    byProject.set(`${cid}:wire:orphan:${invId}`, {
+      source: "wire",
+      projectKey: invId || `pay:${cid}`,
+      projectLabel: invId
+        ? `تحصيل فاتورة ${invId.slice(0, 8)}`
+        : "تحصيل سلك",
+      matchLabel: "_",
+      customerId: cid,
+      sale: 0,
+      paid,
+      occurredAt: null,
+    });
+  }
+
+  // Orphan aa collections by project_id
+  for (const [idKey, paid] of aaCollectionsByProjectId.entries()) {
+    if (paid <= 0) continue;
+    const parts = idKey.split("::");
+    const cid = parts[0] || "";
+    const projectId = parts[1] || "";
+    if (customerId && cid !== customerId) continue;
+    byProject.set(`${cid}:workshop:orphan:id:${projectId}`, {
+      source: "workshop",
+      projectKey: projectId || `pay:${cid}`,
+      projectLabel: projectId
+        ? `تحصيل مشروع ${projectId.slice(0, 8)}`
+        : "تحصيل بدون مشروع",
+      matchLabel: "_",
+      customerId: cid,
+      sale: 0,
+      paid,
+      occurredAt: null,
+    });
+  }
+
+  // Orphan aa collections by label
   for (const [labelKey, paid] of aaCollectionsByLabel.entries()) {
     if (paid <= 0) continue;
     const parts = labelKey.split("::");
