@@ -20,6 +20,22 @@ type ProbeResult = {
 
 async function probeLedgerSchema(): Promise<ProbeResult> {
   const service = await createServiceClient();
+
+  // Direct column probe — void RPC never writes `details`, so it can look healthy
+  // even when the column is missing from the table / PostgREST cache.
+  const colProbe = await service
+    .from("cross_app_ledger_entries")
+    .select("details")
+    .limit(1);
+  const colMessage = colProbe.error?.message || null;
+  const missingColFromSelect =
+    /column ["']?details["']? of relation ["']?cross_app_ledger_entries["']? does not exist/i.test(
+      colMessage || ""
+    ) ||
+    /Could not find the ['"]?details['"]? column of ['"]?cross_app_ledger_entries['"]?/i.test(
+      colMessage || ""
+    );
+
   const probe = await service.rpc("apply_cross_app_ledger_entry", {
     p_source_system: "plisse",
     p_source_ref: "__probe_ledger_schema__",
@@ -34,23 +50,26 @@ async function probeLedgerSchema(): Promise<ProbeResult> {
     p_details: { probe: true },
   });
 
-  const message = probe.error?.message || null;
+  const message = probe.error?.message || colMessage;
   const ambiguous = /Could not choose the best candidate function/i.test(
-    message || ""
+    probe.error?.message || ""
   );
-  const missingFn = /Could not find the function|PGRST202/i.test(message || "");
+  const missingFn = /Could not find the function|PGRST202/i.test(
+    probe.error?.message || ""
+  );
   const missingCol =
+    missingColFromSelect ||
     /column ["']?details["']? of relation ["']?cross_app_ledger_entries["']? does not exist/i.test(
-      message || ""
+      probe.error?.message || ""
     ) ||
     /Could not find the ['"]?details['"]? column of ['"]?cross_app_ledger_entries['"]?/i.test(
-      message || ""
+      probe.error?.message || ""
     );
   // Missing customer is expected for the probe UUID — schema is healthy.
   const businessOk =
-    !message ||
-    /العميل غير موجود|party_id|customer/i.test(message) ||
-    /voided|ok/i.test(message);
+    !probe.error?.message ||
+    /العميل غير موجود|party_id|customer/i.test(probe.error.message) ||
+    /voided|ok/i.test(probe.error.message);
 
   return {
     ready: !ambiguous && !missingFn && !missingCol && businessOk,
