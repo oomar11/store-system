@@ -42,6 +42,8 @@ import {
   type BusinessLine,
 } from "@/lib/business-lines";
 import {
+  businessLinesFromNotes,
+  hydrateCustomersBusinessLines,
   saveCustomerBusinessLinesManual,
 } from "@/lib/customer-business-lines";
 
@@ -65,6 +67,11 @@ export default function CustomersPage() {
   const [lineFilter, setLineFilter] = useState<
     "" | BusinessLine | "multi"
   >("");
+  const [schemaReady, setSchemaReady] = useState<boolean | null>(null);
+  const [schemaBusy, setSchemaBusy] = useState(false);
+  const [schemaSqlEditor, setSchemaSqlEditor] = useState(
+    "https://supabase.com/dashboard/project/qcvhddjvftpjczdxcfjz/sql/new"
+  );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -76,6 +83,73 @@ export default function CustomersPage() {
   useEffect(() => {
     fetchCustomers();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/customers/ensure-business-lines", {
+          cache: "no-store",
+        });
+        const json = (await res.json()) as {
+          ready?: boolean;
+          sqlEditor?: string;
+        };
+        if (cancelled) return;
+        setSchemaReady(json.ready === true);
+        if (json.sqlEditor) setSchemaSqlEditor(json.sqlEditor);
+      } catch {
+        if (!cancelled) setSchemaReady(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function activateBusinessLinesSchema() {
+    setSchemaBusy(true);
+    try {
+      const res = await fetch("/api/customers/ensure-business-lines", {
+        method: "POST",
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        ready?: boolean;
+        applied?: boolean;
+        error?: string;
+        sqlEditor?: string;
+        sql?: string;
+      };
+      if (json.sqlEditor) setSchemaSqlEditor(json.sqlEditor);
+      if (!res.ok || !json.ok || !json.ready) {
+        if (json.sql && typeof navigator !== "undefined" && navigator.clipboard) {
+          try {
+            await navigator.clipboard.writeText(json.sql);
+            toastInfo("تم نسخ SQL — الصقه في SQL Editor ثم Run");
+          } catch {
+            /* ignore */
+          }
+        }
+        throw new Error(
+          json.error ||
+            "تعذر تفعيل التصنيف تلقائياً — افتح SQL Editor وشغّل الترحيل"
+        );
+      }
+      setSchemaReady(true);
+      toastSuccess(
+        json.applied ? "تم تفعيل تصنيف العملاء على القاعدة" : "التصنيف جاهز"
+      );
+      await fetchCustomers();
+    } catch (err) {
+      toastError(err instanceof Error ? err.message : "تعذر تفعيل التصنيف");
+      if (schemaSqlEditor) {
+        window.open(schemaSqlEditor, "_blank", "noopener,noreferrer");
+      }
+    } finally {
+      setSchemaBusy(false);
+    }
+  }
 
   async function fetchCustomers() {
     const offline = !isBrowserOnline();
@@ -104,7 +178,13 @@ export default function CustomersPage() {
                 balance: c.balance,
                 price_tier_id: c.price_tier_id ?? null,
                 linked_supplier_id: c.linked_supplier_id ?? null,
-                business_lines: normalizeBusinessLines(c.business_lines),
+                business_lines: normalizeBusinessLines(
+                  c.business_lines?.length
+                    ? c.business_lines
+                    : businessLinesFromNotes(
+                        (c as { notes?: string | null }).notes
+                      )
+                ),
                 business_lines_locked: c.business_lines_locked === true,
                 is_active: c.is_active !== false,
                 last_activity_at: c.last_activity_at ?? null,
@@ -132,8 +212,12 @@ export default function CustomersPage() {
         for (const s of suppRes.data || []) {
           supplierBal[s.id as string] = Number(s.balance) || 0;
         }
+        const customers = await hydrateCustomersBusinessLines(
+          supabase,
+          (custRes.data as Customer[]) || []
+        );
         return {
-          customers: (custRes.data as Customer[]) || [],
+          customers,
           linkedSupplierBalances: supplierBal,
           settings: (settingsRes.data as Settings | null) ?? null,
         };
@@ -413,6 +497,36 @@ export default function CustomersPage() {
 
   return (
     <div>
+      {schemaReady === false ? (
+        <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="font-bold">تصنيف العملاء مش مفعّل على قاعدة البيانات</p>
+              <p className="mt-0.5 text-amber-900/80">
+                الواجهة ظاهرة لكن الأعمدة لسه متتشغّلتش — فعّل الترحيل مرة واحدة
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={schemaBusy || !canWriteCustomers}
+                onClick={() => void activateBusinessLinesSchema()}
+                className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-bold text-white hover:bg-amber-800 disabled:opacity-50"
+              >
+                {schemaBusy ? "جاري التفعيل…" : "تفعيل التصنيف الآن"}
+              </button>
+              <a
+                href={schemaSqlEditor}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-lg border border-amber-400 bg-white px-4 py-2 text-sm font-bold text-amber-900 hover:bg-amber-100"
+              >
+                فتح SQL Editor
+              </a>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-bold text-gray-900">العملاء</h1>
         <div className="flex flex-wrap gap-2">
@@ -832,11 +946,47 @@ function CustomerForm({
       data.business_lines = businessLines;
       data.business_lines_manual = businessLines;
       data.business_lines_locked = businessLines.length > 0;
-      const { error: insertError } = await supabase.from("customers").insert(data);
+      const { data: inserted, error: insertError } = await supabase
+        .from("customers")
+        .insert(data)
+        .select("id")
+        .maybeSingle();
       if (insertError) {
-        setError(insertError.message);
-        setLoading(false);
-        return;
+        // Columns missing: insert without them, then save via notes fallback
+        const missingCols =
+          /business_lines/i.test(insertError.message || "");
+        if (!missingCols) {
+          setError(insertError.message);
+          setLoading(false);
+          return;
+        }
+        delete data.business_lines;
+        delete data.business_lines_manual;
+        delete data.business_lines_locked;
+        const { data: inserted2, error: insertError2 } = await supabase
+          .from("customers")
+          .insert(data)
+          .select("id")
+          .maybeSingle();
+        if (insertError2 || !inserted2?.id) {
+          setError(insertError2?.message || "تعذر إضافة العميل");
+          setLoading(false);
+          return;
+        }
+        try {
+          await saveCustomerBusinessLinesManual(
+            supabase,
+            inserted2.id,
+            businessLines,
+            { locked: true }
+          );
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "تعذر حفظ التصنيف");
+          setLoading(false);
+          return;
+        }
+      } else if (inserted?.id && businessLines.length > 0) {
+        // columns path already set on insert
       }
     }
 
