@@ -5,6 +5,49 @@ import {
   type BusinessLine,
 } from "@/lib/business-lines";
 
+const NOTES_MARKER_RE =
+  /(?:^|\n)<!--biz:([a-z,_]*)-->(?:\n|$)/i;
+
+function isMissingBusinessLinesColumn(message: string | undefined): boolean {
+  return (
+    /column ["']?business_lines["']? .* does not exist/i.test(message || "") ||
+    /Could not find the ['"]?business_lines['"]? column/i.test(message || "")
+  );
+}
+
+function stripNotesMarker(notes: string | null | undefined): string {
+  return String(notes || "")
+    .replace(NOTES_MARKER_RE, "\n")
+    .replace(/^\n+|\n+$/g, "")
+    .trim();
+}
+
+function parseNotesBusinessLines(
+  notes: string | null | undefined
+): BusinessLine[] {
+  const match = String(notes || "").match(NOTES_MARKER_RE);
+  if (!match) return [];
+  return normalizeBusinessLines(
+    String(match[1] || "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean)
+  );
+}
+
+function embedNotesBusinessLines(
+  notes: string | null | undefined,
+  lines: BusinessLine[]
+): string | null {
+  const clean = stripNotesMarker(notes);
+  const normalized = normalizeBusinessLines(lines);
+  if (normalized.length === 0) {
+    return clean || null;
+  }
+  const marker = `<!--biz:${normalized.join(",")}-->`;
+  return clean ? `${marker}\n${clean}` : marker;
+}
+
 /**
  * Derive business lines from maps, ledger, and store activity for one customer.
  */
@@ -68,9 +111,100 @@ export async function deriveCustomerBusinessLines(
   return normalizeBusinessLines(lines);
 }
 
+async function readCustomerClassificationState(
+  client: SupabaseClient,
+  customerId: string
+): Promise<{
+  mode: "columns" | "notes";
+  lines: BusinessLine[];
+  manual: BusinessLine[];
+  locked: boolean;
+  notes: string | null;
+}> {
+  const { data, error } = await client
+    .from("customers")
+    .select(
+      "business_lines, business_lines_manual, business_lines_locked, notes"
+    )
+    .eq("id", customerId)
+    .maybeSingle();
+
+  if (!error && data) {
+    return {
+      mode: "columns",
+      lines: normalizeBusinessLines(data.business_lines),
+      manual: normalizeBusinessLines(data.business_lines_manual),
+      locked: data.business_lines_locked === true,
+      notes: (data.notes as string | null) ?? null,
+    };
+  }
+
+  if (error && !isMissingBusinessLinesColumn(error.message)) {
+    throw new Error(error.message || "تعذر قراءة تصنيف العميل");
+  }
+
+  const { data: row, error: notesErr } = await client
+    .from("customers")
+    .select("notes")
+    .eq("id", customerId)
+    .maybeSingle();
+  if (notesErr) throw new Error(notesErr.message || "تعذر قراءة تصنيف العميل");
+  if (!row) {
+    return { mode: "notes", lines: [], manual: [], locked: false, notes: null };
+  }
+  const fromNotes = parseNotesBusinessLines(row.notes);
+  return {
+    mode: "notes",
+    lines: fromNotes,
+    manual: fromNotes,
+    locked: fromNotes.length > 0,
+    notes: (row.notes as string | null) ?? null,
+  };
+}
+
+/**
+ * Attach business_lines onto customer rows even when DB columns are missing
+ * (reads the <!--biz:...--> notes fallback).
+ */
+export async function hydrateCustomersBusinessLines<
+  T extends { id: string; notes?: string | null; business_lines?: BusinessLine[] },
+>(client: SupabaseClient, customers: T[]): Promise<T[]> {
+  if (customers.length === 0) return customers;
+  const already = customers.every((c) =>
+    Array.isArray(c.business_lines)
+  );
+  // If select * returned the field (even empty arrays), keep as-is.
+  if (
+    already &&
+    customers.some(
+      (c) =>
+        c.business_lines !== undefined &&
+        Object.prototype.hasOwnProperty.call(c, "business_lines")
+    )
+  ) {
+    // Still enrich empties from notes when columns exist but empty and notes have marker
+    return customers.map((c) => {
+      const fromCols = normalizeBusinessLines(c.business_lines);
+      if (fromCols.length > 0) return { ...c, business_lines: fromCols };
+      const fromNotes = parseNotesBusinessLines(c.notes);
+      return fromNotes.length > 0 ? { ...c, business_lines: fromNotes } : c;
+    });
+  }
+
+  // Columns likely missing — hydrate from notes on each row if present
+  return customers.map((c) => {
+    const fromNotes = parseNotesBusinessLines(c.notes);
+    return {
+      ...c,
+      business_lines: fromNotes,
+    };
+  });
+}
+
 /**
  * Refresh effective business_lines for a customer.
  * Respects business_lines_locked; always merges manual tags when unlocked.
+ * Falls back to notes marker when columns are not migrated yet.
  */
 export async function refreshCustomerBusinessLines(
   client: SupabaseClient,
@@ -80,40 +214,57 @@ export async function refreshCustomerBusinessLines(
   const id = String(customerId || "").trim();
   if (!id) return [];
 
-  const { data: row, error } = await client
-    .from("customers")
-    .select("business_lines, business_lines_manual, business_lines_locked")
-    .eq("id", id)
-    .maybeSingle();
-  if (error) throw new Error(error.message || "تعذر قراءة تصنيف العميل");
-  if (!row) return [];
-
-  if (row.business_lines_locked) {
-    return normalizeBusinessLines(row.business_lines);
+  const state = await readCustomerClassificationState(client, id);
+  if (state.locked && state.mode === "columns") {
+    return state.lines;
+  }
+  if (state.locked && state.mode === "notes") {
+    return state.lines;
   }
 
   const derived = await deriveCustomerBusinessLines(client, id);
   if (options?.forceDerivedLine) {
     derived.push(options.forceDerivedLine);
   }
-  const manual = normalizeBusinessLines(row.business_lines_manual);
-  const next = mergeBusinessLines(derived, manual);
+  const next = mergeBusinessLines(derived, state.manual);
 
-  const prev = normalizeBusinessLines(row.business_lines);
-  const same =
-    prev.length === next.length && prev.every((v, i) => v === next[i]);
-  if (!same) {
-    const { error: upErr } = await client
-      .from("customers")
-      .update({ business_lines: next })
-      .eq("id", id);
-    if (upErr) throw new Error(upErr.message || "تعذر تحديث تصنيف العميل");
+  if (state.mode === "columns") {
+    const same =
+      state.lines.length === next.length &&
+      state.lines.every((v, i) => v === next[i]);
+    if (!same) {
+      const { error: upErr } = await client
+        .from("customers")
+        .update({ business_lines: next })
+        .eq("id", id);
+      if (upErr && isMissingBusinessLinesColumn(upErr.message)) {
+        const notes = embedNotesBusinessLines(state.notes, next);
+        const { error: notesErr } = await client
+          .from("customers")
+          .update({ notes })
+          .eq("id", id);
+        if (notesErr) {
+          throw new Error(notesErr.message || "تعذر تحديث تصنيف العميل");
+        }
+      } else if (upErr) {
+        throw new Error(upErr.message || "تعذر تحديث تصنيف العميل");
+      }
+    }
+    return next;
   }
+
+  const notes = embedNotesBusinessLines(state.notes, next);
+  const { error: notesErr } = await client
+    .from("customers")
+    .update({ notes })
+    .eq("id", id);
+  if (notesErr) throw new Error(notesErr.message || "تعذر تحديث تصنيف العميل");
   return next;
 }
 
 /**
  * Save user-chosen classification (locks auto overwrite).
+ * Uses DB columns when available; otherwise embeds marker in notes.
  */
 export async function saveCustomerBusinessLinesManual(
   client: SupabaseClient,
@@ -125,6 +276,7 @@ export async function saveCustomerBusinessLinesManual(
   if (!id) throw new Error("معرّف العميل مطلوب");
   const manual = normalizeBusinessLines(lines);
   const locked = options?.locked !== false;
+
   const { error } = await client
     .from("customers")
     .update({
@@ -133,7 +285,26 @@ export async function saveCustomerBusinessLinesManual(
       business_lines_locked: locked,
     })
     .eq("id", id);
-  if (error) throw new Error(error.message || "تعذر حفظ التصنيف");
+
+  if (!error) return manual;
+
+  if (!isMissingBusinessLinesColumn(error.message)) {
+    throw new Error(error.message || "تعذر حفظ التصنيف");
+  }
+
+  const { data: row, error: readErr } = await client
+    .from("customers")
+    .select("notes")
+    .eq("id", id)
+    .maybeSingle();
+  if (readErr) throw new Error(readErr.message || "تعذر حفظ التصنيف");
+
+  const notes = embedNotesBusinessLines(row?.notes, manual);
+  const { error: notesErr } = await client
+    .from("customers")
+    .update({ notes })
+    .eq("id", id);
+  if (notesErr) throw new Error(notesErr.message || "تعذر حفظ التصنيف");
   return manual;
 }
 
@@ -146,10 +317,24 @@ export async function unlockAndRefreshCustomerBusinessLines(
 ): Promise<BusinessLine[]> {
   const id = String(customerId || "").trim();
   if (!id) return [];
+
   const { error } = await client
     .from("customers")
     .update({ business_lines_locked: false })
     .eq("id", id);
-  if (error) throw new Error(error.message || "تعذر فتح التصنيف التلقائي");
+
+  if (error && !isMissingBusinessLinesColumn(error.message)) {
+    throw new Error(error.message || "تعذر فتح التصنيف التلقائي");
+  }
+
+  // Notes fallback has no locked flag column — clearing marker lock by
+  // re-deriving and rewriting.
   return refreshCustomerBusinessLines(client, id);
+}
+
+/** Parse business lines from a customer notes field (fallback storage). */
+export function businessLinesFromNotes(
+  notes: string | null | undefined
+): BusinessLine[] {
+  return parseNotesBusinessLines(notes);
 }

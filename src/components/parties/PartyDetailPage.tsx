@@ -81,6 +81,7 @@ import {
   type BusinessLine,
 } from "@/lib/business-lines";
 import {
+  businessLinesFromNotes,
   saveCustomerBusinessLinesManual,
   unlockAndRefreshCustomerBusinessLines,
 } from "@/lib/customer-business-lines";
@@ -419,9 +420,14 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
       setRows(merged);
       setPartyPayments(payments);
       if (kind === "customer") {
-        setEditLines(
-          normalizeBusinessLines((partyData as Customer).business_lines)
+        const cust = partyData as Customer;
+        const lines = normalizeBusinessLines(
+          cust.business_lines?.length
+            ? cust.business_lines
+            : businessLinesFromNotes(cust.notes)
         );
+        setEditLines(lines);
+        setParty({ ...cust, business_lines: lines });
         try {
           const owed = await listCustomerProjectReceivables(supabase, partyId);
           setProjectReceivables(owed);
