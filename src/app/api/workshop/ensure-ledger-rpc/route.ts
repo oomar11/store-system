@@ -42,6 +42,9 @@ async function probeLedgerSchema(): Promise<ProbeResult> {
   const missingCol =
     /column ["']?details["']? of relation ["']?cross_app_ledger_entries["']? does not exist/i.test(
       message || ""
+    ) ||
+    /Could not find the ['"]?details['"]? column of ['"]?cross_app_ledger_entries['"]?/i.test(
+      message || ""
     );
   // Missing customer is expected for the probe UUID — schema is healthy.
   const businessOk =

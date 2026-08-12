@@ -231,8 +231,15 @@ function isLedgerRpcAmbiguousError(message: string | undefined): boolean {
 }
 
 function isMissingDetailsColumnError(message: string | undefined): boolean {
-  return /column ["']?details["']? of relation ["']?cross_app_ledger_entries["']? does not exist/i.test(
-    message || ""
+  // Postgres: column "details" of relation "cross_app_ledger_entries" does not exist
+  // PostgREST schema cache: Could not find the 'details' column of 'cross_app_ledger_entries'
+  return (
+    /column ["']?details["']? of relation ["']?cross_app_ledger_entries["']? does not exist/i.test(
+      message || ""
+    ) ||
+    /Could not find the ['"]?details['"]? column of ['"]?cross_app_ledger_entries['"]?/i.test(
+      message || ""
+    )
   );
 }
 
@@ -304,7 +311,10 @@ export async function applyCrossAppLedgerEntryDirect(
   const notes = String(input.notes || "").trim() || null;
   const projectLabel = String(input.projectLabel || "").trim() || null;
   const details =
-    input.details && typeof input.details === "object" && !Array.isArray(input.details)
+    input.details &&
+    typeof input.details === "object" &&
+    !Array.isArray(input.details) &&
+    Object.keys(input.details).length > 0
       ? input.details
       : null;
 

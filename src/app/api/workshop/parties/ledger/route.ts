@@ -113,7 +113,10 @@ export async function POST(request: NextRequest) {
   try {
     const client = await createServiceClient();
     const details =
-      body.details && typeof body.details === "object" && !Array.isArray(body.details)
+      body.details &&
+      typeof body.details === "object" &&
+      !Array.isArray(body.details) &&
+      Object.keys(body.details).length > 0
         ? body.details
         : null;
     const result = await applyCrossAppLedgerEntry(client, {
