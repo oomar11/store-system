@@ -204,7 +204,8 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
     return paymentId ? `${base}/${paymentId}` : `${base}/new`;
   }
 
-  async function refreshData() {
+  async function refreshData(opts?: { isStale?: () => boolean }) {
+    const stale = () => opts?.isStale?.() === true;
     setExpandedInvoiceIds({});
     setInvoiceItemsByInvoiceId({});
     setItemsLoadingByInvoiceId({});
@@ -286,6 +287,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
                 payment_method: inv.payment_method,
               }) as PartyInvoiceRow
           );
+        if (stale()) return;
         setParty(partyData);
         if (kind === "customer") {
           setEditLines(
@@ -305,9 +307,11 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
         setLoading(false);
         return;
       }
+      if (stale()) return;
       setParty(null);
       setLinkedParty(null);
       setRows([]);
+      setProjectReceivables([]);
       setLoading(false);
       return;
     }
@@ -330,11 +334,14 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           5000
         );
 
+      if (stale()) return;
+
       if (!partyRes.data) {
         setParty(null);
         setLinkedParty(null);
         setRows([]);
         setPartyPayments([]);
+        setProjectReceivables([]);
         setLoading(false);
         return;
       }
@@ -415,6 +422,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
         (a, b) =>
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
+      if (stale()) return;
       setParty(partyData);
       setLinkedParty(linkedData);
       setRows(merged);
@@ -430,8 +438,12 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
         setParty({ ...cust, business_lines: lines });
         try {
           const owed = await listCustomerProjectReceivables(supabase, partyId);
-          setProjectReceivables(owed);
+          if (stale()) return;
+          setProjectReceivables(
+            owed.filter((row) => row.customerId === partyId)
+          );
         } catch {
+          if (stale()) return;
           setProjectReceivables([]);
         }
       } else {
@@ -440,8 +452,10 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
       if (settingsRes.data) setSettings(settingsRes.data);
       setLoading(false);
     } catch {
+      if (stale()) return;
       // Fall back to snapshot on timeout / network
       const snap = await getSnapshot();
+      if (stale()) return;
       const fromSnap =
         kind === "customer"
           ? snap?.customers.find((c) => c.id === partyId)
@@ -480,6 +494,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
         );
         if (snap?.settings) setSettings(snap.settings as unknown as Settings);
       }
+      setProjectReceivables([]);
       setLoading(false);
     }
   }
@@ -771,8 +786,9 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
 
     async function load() {
       setLoading(true);
-      await refreshData();
-      if (cancelled) return;
+      // Drop previous customer's owed projects before the new fetch settles.
+      setProjectReceivables([]);
+      await refreshData({ isStale: () => cancelled });
     }
 
     void load();
