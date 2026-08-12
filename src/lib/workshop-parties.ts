@@ -219,7 +219,7 @@ export type LedgerEntryInput = {
 };
 
 function isMissingLedgerRpcError(message: string | undefined): boolean {
-  return /Could not find the function.*apply_cross_app_ledger_entry/i.test(
+  return /Could not find the function.*apply_cross_app_ledger_entry|PGRST202/i.test(
     message || ""
   );
 }
@@ -236,15 +236,214 @@ function isMissingDetailsColumnError(message: string | undefined): boolean {
   );
 }
 
-function ledgerSchemaRepairHint(message: string | undefined): string | null {
-  if (
+function isBrokenLedgerSchemaError(message: string | undefined): boolean {
+  return (
     isMissingLedgerRpcError(message) ||
     isLedgerRpcAmbiguousError(message) ||
     isMissingDetailsColumnError(message)
-  ) {
-    return "دالة حساب الورشة غير مكتملة على قاعدة البيانات — طبّق migration 20260815_fix_cross_app_ledger_details_and_wipe (أو POST /api/workshop/ensure-ledger-rpc) ثم أعد المحاولة";
+  );
+}
+
+type LedgerApplyResult = {
+  id: string | null;
+  delta: number;
+  amount: number;
+  direction: string;
+  voided: boolean;
+};
+
+function signedLedgerAmount(
+  direction: "debit" | "credit",
+  amount: number
+): number {
+  return direction === "debit" ? amount : -amount;
+}
+
+async function adjustPartyBalance(
+  client: SupabaseClient,
+  partyType: PartyKind,
+  partyId: string,
+  delta: number
+) {
+  if (!partyId || Math.abs(delta) < 0.0005) return;
+  const rpc =
+    partyType === "customer"
+      ? "adjust_customer_balance"
+      : "adjust_supplier_balance";
+  const { error } = await client.rpc(rpc, {
+    p_id: partyId,
+    p_delta: delta,
+  });
+  if (error) {
+    throw new Error(error.message || "تعذر تحديث رصيد الطرف");
   }
-  return null;
+}
+
+/**
+ * Service-role table writes when production RPC overloads / missing `details`
+ * column break PostgREST (same pattern as transferBetweenSafesDirect).
+ */
+export async function applyCrossAppLedgerEntryDirect(
+  client: SupabaseClient,
+  input: LedgerEntryInput
+): Promise<LedgerApplyResult> {
+  const sourceSystem = String(input.sourceSystem || "")
+    .trim()
+    .toLowerCase() as WorkshopSourceSystem;
+  const sourceRef = String(input.sourceRef || "").trim();
+  const partyType = String(input.partyType || "")
+    .trim()
+    .toLowerCase() as PartyKind;
+  const entryType = String(input.entryType || "").trim().toLowerCase();
+  const direction = String(input.direction || "")
+    .trim()
+    .toLowerCase() as "debit" | "credit";
+  const amount = Math.max(0, Number(input.amount) || 0);
+  const partyId = String(input.partyId || "").trim();
+  const occurredAt = input.occurredAt || new Date().toISOString();
+  const notes = String(input.notes || "").trim() || null;
+  const projectLabel = String(input.projectLabel || "").trim() || null;
+  const details =
+    input.details && typeof input.details === "object" && !Array.isArray(input.details)
+      ? input.details
+      : null;
+
+  if (sourceSystem !== "aa" && sourceSystem !== "plisse") {
+    throw new Error("source_system غير صالح");
+  }
+  if (!sourceRef) throw new Error("source_ref مطلوب");
+  if (partyType !== "customer" && partyType !== "supplier") {
+    throw new Error("party_type غير صالح");
+  }
+  if (!partyId) throw new Error("party_id مطلوب");
+  if (
+    entryType !== "workshop_sale" &&
+    entryType !== "workshop_collection" &&
+    entryType !== "workshop_adjustment" &&
+    entryType !== "workshop_void"
+  ) {
+    throw new Error("entry_type غير صالح");
+  }
+  if (direction !== "debit" && direction !== "credit") {
+    throw new Error("direction غير صالح");
+  }
+
+  const partyTable = partyType === "customer" ? "customers" : "suppliers";
+  const { data: partyRow, error: partyErr } = await client
+    .from(partyTable)
+    .select("id")
+    .eq("id", partyId)
+    .maybeSingle();
+  if (partyErr) throw new Error(partyErr.message || "تعذر التحقق من الطرف");
+  if (!partyRow) {
+    throw new Error(partyType === "customer" ? "العميل غير موجود" : "المورد غير موجود");
+  }
+
+  const { data: existing, error: existErr } = await client
+    .from("cross_app_ledger_entries")
+    .select(
+      "id, party_type, party_id, amount, direction, entry_type, source_system, source_ref"
+    )
+    .eq("source_system", sourceSystem)
+    .eq("source_ref", sourceRef)
+    .maybeSingle();
+  if (existErr) {
+    throw new Error(existErr.message || "تعذر قراءة دفتر الورشة");
+  }
+
+  const oldSigned = existing
+    ? signedLedgerAmount(
+        existing.direction === "credit" ? "credit" : "debit",
+        Number(existing.amount) || 0
+      )
+    : 0;
+  const voided = amount < 0.0005 || entryType === "workshop_void";
+  const newSigned = voided ? 0 : signedLedgerAmount(direction, amount);
+  const now = new Date().toISOString();
+
+  let entryId: string | null = existing?.id || null;
+
+  if (voided) {
+    if (existing?.id) {
+      const { error: delErr } = await client
+        .from("cross_app_ledger_entries")
+        .delete()
+        .eq("id", existing.id);
+      if (delErr) {
+        throw new Error(delErr.message || "تعذر إلغاء حركة الورشة");
+      }
+    }
+  } else {
+    const baseRow = {
+      party_type: partyType,
+      party_id: partyId,
+      source_system: sourceSystem,
+      source_ref: sourceRef,
+      entry_type: entryType,
+      amount,
+      direction,
+      occurred_at: occurredAt,
+      notes,
+      project_label: projectLabel,
+      updated_at: now,
+    };
+
+    const writeWithOptionalDetails = async (
+      withDetails: boolean
+    ): Promise<{ id: string | null; error: string | null }> => {
+      const row =
+        withDetails && details != null
+          ? { ...baseRow, details }
+          : baseRow;
+      if (existing?.id) {
+        const { data, error } = await client
+          .from("cross_app_ledger_entries")
+          .update(row)
+          .eq("id", existing.id)
+          .select("id")
+          .maybeSingle();
+        return {
+          id: data?.id || existing.id,
+          error: error?.message || null,
+        };
+      }
+      const { data, error } = await client
+        .from("cross_app_ledger_entries")
+        .insert(row)
+        .select("id")
+        .maybeSingle();
+      return { id: data?.id || null, error: error?.message || null };
+    };
+
+    let written = await writeWithOptionalDetails(true);
+    if (written.error && isMissingDetailsColumnError(written.error)) {
+      written = await writeWithOptionalDetails(false);
+    }
+    if (written.error) {
+      throw new Error(written.error);
+    }
+    entryId = written.id;
+  }
+
+  // Reverse previous effect on the OLD party (covers party moves)
+  if (existing && Math.abs(oldSigned) >= 0.0005) {
+    const oldType =
+      existing.party_type === "supplier" ? "supplier" : "customer";
+    await adjustPartyBalance(client, oldType, String(existing.party_id), -oldSigned);
+  }
+
+  // Apply new effect on the NEW party
+  if (Math.abs(newSigned) >= 0.0005) {
+    await adjustPartyBalance(client, partyType, partyId, newSigned);
+  }
+
+  return {
+    id: entryId,
+    delta: newSigned - oldSigned,
+    amount,
+    direction,
+    voided,
+  };
 }
 
 export async function applyCrossAppLedgerEntry(
@@ -273,18 +472,17 @@ export async function applyCrossAppLedgerEntry(
     params
   );
 
-  if (error) {
-    const hint = ledgerSchemaRepairHint(error.message);
-    if (hint) throw new Error(hint);
-    throw new Error(error.message || "تعذر تسجيل حركة الورشة");
+  if (!error) {
+    return data as LedgerApplyResult;
   }
-  return data as {
-    id: string | null;
-    delta: number;
-    amount: number;
-    direction: string;
-    voided: boolean;
-  };
+
+  // Production may still have dual overloads + missing details column.
+  // Fall back to direct writes (service role) so workshops stop showing «محلياً».
+  if (isBrokenLedgerSchemaError(error.message)) {
+    return applyCrossAppLedgerEntryDirect(client, input);
+  }
+
+  throw new Error(error.message || "تعذر تسجيل حركة الورشة");
 }
 
 export type ExternalPurchaseLine = {
