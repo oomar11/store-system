@@ -52,6 +52,8 @@ type Acc = {
   source: ProjectReceivableSource;
   projectKey: string;
   projectLabel: string;
+  /** Raw ledger project_label used to match aa collections (never reformatted). */
+  matchLabel: string;
   customerId: string;
   sale: number;
   paid: number;
@@ -218,13 +220,18 @@ export async function listProjectReceivables(
     const parsed = parseProjectKey(row.source_ref);
     const label = String(row.project_label || "").trim();
     const invNo = invoiceNumberFromDetails(row.details);
+    const partyKey = String(row.party_id || "").trim();
+    if (!partyKey) continue;
+    // Never mix another customer's rows into this view.
+    if (customerId && partyKey !== customerId) continue;
 
     if (
       row.entry_type === "workshop_sale" ||
       (row.entry_type === "workshop_adjustment" && row.direction === "debit")
     ) {
       if (parsed.kind === "pay") continue;
-      const mapKey = `${source}:${parsed.kind}:${parsed.key}`;
+      // Include party_id so identical source_ref across customers never merges.
+      const mapKey = `${partyKey}:${source}:${parsed.kind}:${parsed.key}`;
       const existing = byProject.get(mapKey);
       const occurredAt = row.occurred_at || existing?.occurredAt || null;
       let projectLabel = existing?.projectLabel || "";
@@ -242,7 +249,8 @@ export async function listProjectReceivables(
         source,
         projectKey: parsed.key,
         projectLabel,
-        customerId: String(row.party_id),
+        matchLabel: existing?.matchLabel || label || "_",
+        customerId: partyKey,
         sale:
           (existing?.sale || 0) + (row.direction === "debit" ? amount : 0),
         paid: existing?.paid || 0,
@@ -258,13 +266,13 @@ export async function listProjectReceivables(
       const credit = row.direction === "credit" ? amount : 0;
       if (credit <= 0) continue;
       if (source === "wire") {
-        const pid = String(row.party_id);
         wireCollectionsByParty.set(
-          pid,
-          (wireCollectionsByParty.get(pid) || 0) + credit
+          partyKey,
+          (wireCollectionsByParty.get(partyKey) || 0) + credit
         );
       } else {
-        const labelKey = `${source}::${row.party_id}::${label || "_"}`;
+        // Match aa payments to sales by the raw project_label on the ledger row.
+        const labelKey = `${source}::${partyKey}::${label || "_"}`;
         aaCollectionsByLabel.set(
           labelKey,
           (aaCollectionsByLabel.get(labelKey) || 0) + credit
@@ -273,10 +281,10 @@ export async function listProjectReceivables(
     }
   }
 
-  // Attach aa collections by project label
+  // Attach aa collections by project label (same party + exact label only).
   for (const acc of byProject.values()) {
     if (acc.source !== "workshop") continue;
-    const labelKey = `workshop::${acc.customerId}::${acc.projectLabel || "_"}`;
+    const labelKey = `workshop::${acc.customerId}::${acc.matchLabel || "_"}`;
     const paid = aaCollectionsByLabel.get(labelKey) || 0;
     if (paid > 0) {
       acc.paid += paid;
@@ -296,10 +304,11 @@ export async function listProjectReceivables(
     const targets = wireByParty.get(pid) || [];
     const leftover = allocateFifo(targets, paidTotal);
     if (leftover > 0.0005 && targets.length === 0) {
-      byProject.set(`wire:orphan:${pid}`, {
+      byProject.set(`${pid}:wire:orphan:pay`, {
         source: "wire",
         projectKey: `pay:${pid}`,
         projectLabel: "تحصيل سلك",
+        matchLabel: "_",
         customerId: pid,
         sale: 0,
         paid: leftover,
@@ -314,10 +323,12 @@ export async function listProjectReceivables(
     const parts = labelKey.split("::");
     const cid = parts[1] || "";
     const label = parts.slice(2).join("::");
-    byProject.set(`workshop:orphan:${cid}:${label}`, {
+    if (customerId && cid !== customerId) continue;
+    byProject.set(`${cid}:workshop:orphan:${label}`, {
       source: "workshop",
       projectKey: `pay:${label || cid}`,
       projectLabel: label === "_" ? "تحصيل بدون مشروع" : label,
+      matchLabel: label || "_",
       customerId: cid,
       sale: 0,
       paid,
@@ -328,6 +339,7 @@ export async function listProjectReceivables(
   const rows: ProjectReceivableRow[] = [];
 
   for (const [mapKey, acc] of byProject.entries()) {
+    if (customerId && acc.customerId !== customerId) continue;
     if (sourceFilter !== "all" && acc.source !== sourceFilter) continue;
     const remaining = Math.max(0, acc.sale - acc.paid);
     if (onlyOwed && remaining <= 0.0005) continue;
@@ -350,14 +362,16 @@ export async function listProjectReceivables(
 
   if (sourceFilter === "all" || sourceFilter === "store") {
     for (const inv of invoicesRes.data || []) {
+      const cid = String(inv.customer_id || "").trim();
+      if (!cid) continue;
+      if (customerId && cid !== customerId) continue;
       const total = Number(inv.total) || 0;
       const paid = Number(inv.paid_amount) || 0;
       const remaining = Math.max(0, total - paid);
       if (onlyOwed && remaining <= 0.0005) continue;
-      const cid = String(inv.customer_id || "");
       const customer = customersById.get(cid);
       rows.push({
-        id: `store:inv:${inv.id}`,
+        id: `${cid}:store:inv:${inv.id}`,
         source: "store",
         sourceLabel: sourceLabel("store"),
         projectKey: String(inv.id),
@@ -394,10 +408,13 @@ export async function listCustomerProjectReceivables(
   client: SupabaseClient,
   customerId: string
 ): Promise<ProjectReceivableRow[]> {
+  const id = String(customerId || "").trim();
+  if (!id) return [];
   const { rows } = await listProjectReceivables(client, {
-    customerId,
+    customerId: id,
     onlyOwed: true,
     source: "all",
   });
-  return rows;
+  // Hard guard: never surface another customer's projects on the party page.
+  return rows.filter((row) => row.customerId === id);
 }
