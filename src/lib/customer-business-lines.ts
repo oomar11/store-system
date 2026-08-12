@@ -59,7 +59,7 @@ export async function deriveCustomerBusinessLines(
   const id = String(customerId || "").trim();
   if (!id) return [];
 
-  const [mapRes, ledgerRes, invRes, payRes, custRes] = await Promise.all([
+  const [mapRes, ledgerRes, invRes] = await Promise.all([
     client
       .from("workshop_party_map")
       .select("source_system")
@@ -78,17 +78,6 @@ export async function deriveCustomerBusinessLines(
       .eq("status", "completed")
       .in("type", ["sale", "sale_return"])
       .limit(1),
-    client
-      .from("party_payments")
-      .select("id")
-      .eq("party_type", "customer")
-      .eq("party_id", id)
-      .limit(1),
-    client
-      .from("customers")
-      .select("balance, opening_balance")
-      .eq("id", id)
-      .maybeSingle(),
   ]);
 
   const lines: BusinessLine[] = [];
@@ -102,12 +91,9 @@ export async function deriveCustomerBusinessLines(
   if (systems.has("plisse")) lines.push("wire");
   if (systems.has("aa")) lines.push("workshop");
 
-  const hasStoreActivity =
-    (invRes.data && invRes.data.length > 0) ||
-    (payRes.data && payRes.data.length > 0) ||
-    Math.abs(Number(custRes.data?.balance) || 0) > 0.0005 ||
-    Math.abs(Number(custRes.data?.opening_balance) || 0) > 0.0005;
-  if (hasStoreActivity) lines.push("store");
+  // محل = فواتير بيع/مرتجع محل فقط.
+  // رصيد العميل بيتأثر بقيود الورشة، فمش دليل على تعامل محل.
+  if (invRes.data && invRes.data.length > 0) lines.push("store");
 
   return normalizeBusinessLines(lines);
 }
@@ -396,7 +382,7 @@ export async function backfillAllCustomerBusinessLines(
 
   const ids = rows.map((r) => String(r.id));
 
-  const [mapRes, ledgerRes, invRes, payRes] = await Promise.all([
+  const [mapRes, ledgerRes, invRes] = await Promise.all([
     client
       .from("workshop_party_map")
       .select("store_party_id, source_system")
@@ -413,15 +399,10 @@ export async function backfillAllCustomerBusinessLines(
       .eq("status", "completed")
       .in("type", ["sale", "sale_return"])
       .in("customer_id", ids),
-    client
-      .from("party_payments")
-      .select("party_id")
-      .eq("party_type", "customer")
-      .in("party_id", ids),
   ]);
 
   const systemsByCustomer = new Map<string, Set<string>>();
-  const storeActivity = new Set<string>();
+  const storeInvoiceCustomers = new Set<string>();
 
   for (const row of mapRes.data || []) {
     const id = String(row.store_party_id || "");
@@ -438,10 +419,7 @@ export async function backfillAllCustomerBusinessLines(
     systemsByCustomer.set(id, set);
   }
   for (const row of invRes.data || []) {
-    if (row.customer_id) storeActivity.add(String(row.customer_id));
-  }
-  for (const row of payRes.data || []) {
-    if (row.party_id) storeActivity.add(String(row.party_id));
+    if (row.customer_id) storeInvoiceCustomers.add(String(row.customer_id));
   }
 
   let updated = 0;
@@ -453,18 +431,9 @@ export async function backfillAllCustomerBusinessLines(
     const derived: BusinessLine[] = [];
     if (systems.has("plisse")) derived.push("wire");
     if (systems.has("aa")) derived.push("workshop");
-    if (
-      storeActivity.has(id) ||
-      Math.abs(Number(row.balance) || 0) > 0.0005 ||
-      Math.abs(Number(row.opening_balance) || 0) > 0.0005
-    ) {
-      derived.push("store");
-    }
+    // محل فقط لو فيه فاتورة بيع/مرتجع محل — مش الرصيد (بيتأثر بالورشة)
+    if (storeInvoiceCustomers.has(id)) derived.push("store");
     const next = normalizeBusinessLines(derived);
-    if (next.length === 0) {
-      skipped++;
-      continue;
-    }
 
     if (mode === "columns") {
       const locked = row.business_lines_locked === true;
@@ -474,7 +443,9 @@ export async function backfillAllCustomerBusinessLines(
         skipped++;
         continue;
       }
-      const merged = mergeBusinessLines(next, manual);
+      const merged = force
+        ? next
+        : mergeBusinessLines(next, manual);
       const same =
         current.length === merged.length &&
         current.every((v, i) => v === merged[i]);
@@ -484,7 +455,15 @@ export async function backfillAllCustomerBusinessLines(
       }
       const { error } = await client
         .from("customers")
-        .update({ business_lines: merged })
+        .update({
+          business_lines: merged,
+          ...(force
+            ? {
+                business_lines_manual: merged,
+                business_lines_locked: false,
+              }
+            : {}),
+        })
         .eq("id", id);
       if (error) {
         errors.push(`${id}: ${error.message}`);
@@ -496,10 +475,25 @@ export async function backfillAllCustomerBusinessLines(
 
     // notes mode
     const existing = parseNotesBusinessLines(row.notes);
-    if (existing.length > 0 && !force) {
-      skipped++;
-      continue;
+    if (!force) {
+      if (existing.length > 0) {
+        skipped++;
+        continue;
+      }
+      if (next.length === 0) {
+        skipped++;
+        continue;
+      }
+    } else {
+      const same =
+        existing.length === next.length &&
+        existing.every((v, i) => v === next[i]);
+      if (same) {
+        skipped++;
+        continue;
+      }
     }
+
     const notes = embedNotesBusinessLines(row.notes, next);
     const { error } = await client
       .from("customers")

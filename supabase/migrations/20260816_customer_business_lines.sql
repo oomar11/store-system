@@ -80,13 +80,6 @@ WITH derived AS (
                   AND i.status = 'completed'
                   AND i.type IN ('sale', 'sale_return')
               )
-              OR EXISTS (
-                SELECT 1 FROM public.party_payments p
-                WHERE p.party_type = 'customer'
-                  AND p.party_id = c.id
-              )
-              OR COALESCE(c.balance, 0) <> 0
-              OR COALESCE(c.opening_balance, 0) <> 0
               THEN 'store'
             END
           ]::text[],
