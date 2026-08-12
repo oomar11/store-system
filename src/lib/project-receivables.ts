@@ -1,0 +1,403 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  BUSINESS_LINE_LABELS,
+  type BusinessLine,
+} from "@/lib/business-lines";
+
+export type ProjectReceivableSource = "wire" | "workshop" | "store";
+
+export type ProjectReceivableRow = {
+  id: string;
+  source: ProjectReceivableSource;
+  sourceLabel: string;
+  projectKey: string;
+  projectLabel: string;
+  customerId: string;
+  customerName: string;
+  customerPhone: string;
+  sale: number;
+  paid: number;
+  remaining: number;
+  occurredAt: string | null;
+};
+
+export type ProjectReceivablesTotals = {
+  sale: number;
+  paid: number;
+  remaining: number;
+  owedCount: number;
+};
+
+type LedgerRow = {
+  id: string;
+  party_id: string;
+  source_system: string;
+  source_ref: string;
+  entry_type: string;
+  amount: number;
+  direction: string;
+  occurred_at: string | null;
+  project_label: string | null;
+  notes: string | null;
+  details: Record<string, unknown> | null;
+};
+
+type CustomerLite = {
+  id: string;
+  name: string;
+  phone: string | null;
+};
+
+type Acc = {
+  source: ProjectReceivableSource;
+  projectKey: string;
+  projectLabel: string;
+  customerId: string;
+  sale: number;
+  paid: number;
+  occurredAt: string | null;
+};
+
+function sourceLabel(source: ProjectReceivableSource): string {
+  if (source === "wire") return BUSINESS_LINE_LABELS.wire;
+  if (source === "workshop") return BUSINESS_LINE_LABELS.workshop;
+  return BUSINESS_LINE_LABELS.store;
+}
+
+function parseProjectKey(
+  sourceRef: string
+): { kind: "sale" | "inv" | "pay" | "other"; key: string } {
+  const ref = String(sourceRef || "").trim();
+  if (ref.startsWith("sale:")) {
+    return { kind: "sale", key: ref.slice(5) };
+  }
+  if (ref.startsWith("inv:")) {
+    return { kind: "inv", key: ref.slice(4) };
+  }
+  if (ref.startsWith("pay:")) {
+    return { kind: "pay", key: ref.slice(4) };
+  }
+  return { kind: "other", key: ref };
+}
+
+function invoiceNumberFromDetails(
+  details: Record<string, unknown> | null
+): string | null {
+  if (!details || typeof details !== "object") return null;
+  const n = details.invoice_number;
+  if (n == null) return null;
+  const s = String(n).trim();
+  return s || null;
+}
+
+/** Allocate paid amounts FIFO across sale rows (plisse: pays share customer label). */
+function allocateFifo(targets: Acc[], paidTotal: number) {
+  let left = Math.max(0, paidTotal);
+  const ordered = [...targets].sort((a, b) => {
+    const ta = a.occurredAt ? new Date(a.occurredAt).getTime() : 0;
+    const tb = b.occurredAt ? new Date(b.occurredAt).getTime() : 0;
+    return ta - tb;
+  });
+  for (const acc of ordered) {
+    if (left <= 0) break;
+    const need = Math.max(0, acc.sale - acc.paid);
+    const take = Math.min(need, left);
+    acc.paid += take;
+    left -= take;
+  }
+  return left;
+}
+
+/**
+ * Build per-project / per-invoice outstanding rows across workshops + store credit.
+ */
+export async function listProjectReceivables(
+  client: SupabaseClient,
+  options?: {
+    customerId?: string | null;
+    onlyOwed?: boolean;
+    source?: ProjectReceivableSource | "all" | BusinessLine;
+  }
+): Promise<{
+  rows: ProjectReceivableRow[];
+  totals: ProjectReceivablesTotals;
+}> {
+  const customerId = String(options?.customerId || "").trim() || null;
+  const onlyOwed = options?.onlyOwed !== false;
+  const sourceFilter = options?.source || "all";
+
+  let ledgerRows: LedgerRow[] = [];
+  {
+    let ledgerQ = client
+      .from("cross_app_ledger_entries")
+      .select(
+        "id, party_id, source_system, source_ref, entry_type, amount, direction, occurred_at, project_label, notes, details"
+      )
+      .eq("party_type", "customer")
+      .in("entry_type", [
+        "workshop_sale",
+        "workshop_collection",
+        "workshop_adjustment",
+      ]);
+    if (customerId) ledgerQ = ledgerQ.eq("party_id", customerId);
+    let ledgerRes = await ledgerQ;
+    if (ledgerRes.error && /details/i.test(ledgerRes.error.message || "")) {
+      let retry = client
+        .from("cross_app_ledger_entries")
+        .select(
+          "id, party_id, source_system, source_ref, entry_type, amount, direction, occurred_at, project_label, notes"
+        )
+        .eq("party_type", "customer")
+        .in("entry_type", [
+          "workshop_sale",
+          "workshop_collection",
+          "workshop_adjustment",
+        ]);
+      if (customerId) retry = retry.eq("party_id", customerId);
+      ledgerRes = (await retry) as typeof ledgerRes;
+    }
+    if (ledgerRes.error) {
+      throw new Error(ledgerRes.error.message || "تعذر قراءة دفتر الورش");
+    }
+    ledgerRows = ((ledgerRes.data || []) as LedgerRow[]).map((row) => ({
+      ...row,
+      details: row.details ?? null,
+    }));
+  }
+
+  let invoicesQ = client
+    .from("invoices")
+    .select(
+      "id, invoice_number, customer_id, total, paid_amount, created_at, status, type"
+    )
+    .eq("status", "completed")
+    .eq("type", "sale");
+  if (customerId) invoicesQ = invoicesQ.eq("customer_id", customerId);
+
+  const invoicesRes = await invoicesQ;
+  if (invoicesRes.error) {
+    throw new Error(invoicesRes.error.message || "تعذر قراءة فواتير المحل");
+  }
+
+  const ledger = ledgerRows;
+  const partyIds = new Set<string>();
+  for (const row of ledger) partyIds.add(String(row.party_id));
+  for (const inv of invoicesRes.data || []) {
+    if (inv.customer_id) partyIds.add(String(inv.customer_id));
+  }
+
+  const customersById = new Map<string, CustomerLite>();
+  if (partyIds.size > 0) {
+    const { data: customers, error: custErr } = await client
+      .from("customers")
+      .select("id, name, phone")
+      .in("id", Array.from(partyIds));
+    if (custErr) {
+      throw new Error(custErr.message || "تعذر قراءة العملاء");
+    }
+    for (const c of customers || []) {
+      customersById.set(String(c.id), {
+        id: String(c.id),
+        name: String(c.name || "عميل"),
+        phone: (c.phone as string | null) ?? null,
+      });
+    }
+  }
+
+  const byProject = new Map<string, Acc>();
+  /** aa collections keyed by source + party + project_label */
+  const aaCollectionsByLabel = new Map<string, number>();
+  /** plisse collections keyed by party id only (FIFO across invoices) */
+  const wireCollectionsByParty = new Map<string, number>();
+
+  for (const row of ledger) {
+    const sys = String(row.source_system || "").toLowerCase();
+    const source: ProjectReceivableSource =
+      sys === "plisse" ? "wire" : "workshop";
+    const amount = Math.max(0, Number(row.amount) || 0);
+    const parsed = parseProjectKey(row.source_ref);
+    const label = String(row.project_label || "").trim();
+    const invNo = invoiceNumberFromDetails(row.details);
+
+    if (
+      row.entry_type === "workshop_sale" ||
+      (row.entry_type === "workshop_adjustment" && row.direction === "debit")
+    ) {
+      if (parsed.kind === "pay") continue;
+      const mapKey = `${source}:${parsed.kind}:${parsed.key}`;
+      const existing = byProject.get(mapKey);
+      const occurredAt = row.occurred_at || existing?.occurredAt || null;
+      let projectLabel = existing?.projectLabel || "";
+      if (invNo) projectLabel = `فاتورة ${invNo}`;
+      else if (source === "workshop" && label) projectLabel = label;
+      else if (!projectLabel) {
+        projectLabel =
+          parsed.kind === "inv"
+            ? `فاتورة بلسية ${parsed.key.slice(0, 8)}`
+            : parsed.kind === "sale"
+              ? label || `مشروع ${parsed.key.slice(0, 8)}`
+              : label || parsed.key.slice(0, 12);
+      }
+      byProject.set(mapKey, {
+        source,
+        projectKey: parsed.key,
+        projectLabel,
+        customerId: String(row.party_id),
+        sale:
+          (existing?.sale || 0) + (row.direction === "debit" ? amount : 0),
+        paid: existing?.paid || 0,
+        occurredAt,
+      });
+      continue;
+    }
+
+    if (
+      row.entry_type === "workshop_collection" ||
+      (row.entry_type === "workshop_adjustment" && row.direction === "credit")
+    ) {
+      const credit = row.direction === "credit" ? amount : 0;
+      if (credit <= 0) continue;
+      if (source === "wire") {
+        const pid = String(row.party_id);
+        wireCollectionsByParty.set(
+          pid,
+          (wireCollectionsByParty.get(pid) || 0) + credit
+        );
+      } else {
+        const labelKey = `${source}::${row.party_id}::${label || "_"}`;
+        aaCollectionsByLabel.set(
+          labelKey,
+          (aaCollectionsByLabel.get(labelKey) || 0) + credit
+        );
+      }
+    }
+  }
+
+  // Attach aa collections by project label
+  for (const acc of byProject.values()) {
+    if (acc.source !== "workshop") continue;
+    const labelKey = `workshop::${acc.customerId}::${acc.projectLabel || "_"}`;
+    const paid = aaCollectionsByLabel.get(labelKey) || 0;
+    if (paid > 0) {
+      acc.paid += paid;
+      aaCollectionsByLabel.delete(labelKey);
+    }
+  }
+
+  // Plisse: FIFO allocate collections across invoice sales per customer
+  const wireByParty = new Map<string, Acc[]>();
+  for (const acc of byProject.values()) {
+    if (acc.source !== "wire") continue;
+    const list = wireByParty.get(acc.customerId) || [];
+    list.push(acc);
+    wireByParty.set(acc.customerId, list);
+  }
+  for (const [pid, paidTotal] of wireCollectionsByParty.entries()) {
+    const targets = wireByParty.get(pid) || [];
+    const leftover = allocateFifo(targets, paidTotal);
+    if (leftover > 0.0005 && targets.length === 0) {
+      byProject.set(`wire:orphan:${pid}`, {
+        source: "wire",
+        projectKey: `pay:${pid}`,
+        projectLabel: "تحصيل سلك",
+        customerId: pid,
+        sale: 0,
+        paid: leftover,
+        occurredAt: null,
+      });
+    }
+  }
+
+  // Orphan aa collections
+  for (const [labelKey, paid] of aaCollectionsByLabel.entries()) {
+    if (paid <= 0) continue;
+    const parts = labelKey.split("::");
+    const cid = parts[1] || "";
+    const label = parts.slice(2).join("::");
+    byProject.set(`workshop:orphan:${cid}:${label}`, {
+      source: "workshop",
+      projectKey: `pay:${label || cid}`,
+      projectLabel: label === "_" ? "تحصيل بدون مشروع" : label,
+      customerId: cid,
+      sale: 0,
+      paid,
+      occurredAt: null,
+    });
+  }
+
+  const rows: ProjectReceivableRow[] = [];
+
+  for (const [mapKey, acc] of byProject.entries()) {
+    if (sourceFilter !== "all" && acc.source !== sourceFilter) continue;
+    const remaining = Math.max(0, acc.sale - acc.paid);
+    if (onlyOwed && remaining <= 0.0005) continue;
+    const customer = customersById.get(acc.customerId);
+    rows.push({
+      id: mapKey,
+      source: acc.source,
+      sourceLabel: sourceLabel(acc.source),
+      projectKey: acc.projectKey,
+      projectLabel: acc.projectLabel,
+      customerId: acc.customerId,
+      customerName: customer?.name || "عميل",
+      customerPhone: customer?.phone || "",
+      sale: acc.sale,
+      paid: acc.paid,
+      remaining,
+      occurredAt: acc.occurredAt,
+    });
+  }
+
+  if (sourceFilter === "all" || sourceFilter === "store") {
+    for (const inv of invoicesRes.data || []) {
+      const total = Number(inv.total) || 0;
+      const paid = Number(inv.paid_amount) || 0;
+      const remaining = Math.max(0, total - paid);
+      if (onlyOwed && remaining <= 0.0005) continue;
+      const cid = String(inv.customer_id || "");
+      const customer = customersById.get(cid);
+      rows.push({
+        id: `store:inv:${inv.id}`,
+        source: "store",
+        sourceLabel: sourceLabel("store"),
+        projectKey: String(inv.id),
+        projectLabel: `فاتورة ${inv.invoice_number || String(inv.id).slice(0, 8)}`,
+        customerId: cid,
+        customerName: customer?.name || "عميل",
+        customerPhone: customer?.phone || "",
+        sale: total,
+        paid,
+        remaining,
+        occurredAt: inv.created_at || null,
+      });
+    }
+  }
+
+  rows.sort((a, b) => {
+    if (b.remaining !== a.remaining) return b.remaining - a.remaining;
+    const ta = a.occurredAt ? new Date(a.occurredAt).getTime() : 0;
+    const tb = b.occurredAt ? new Date(b.occurredAt).getTime() : 0;
+    return tb - ta;
+  });
+
+  const totals: ProjectReceivablesTotals = {
+    sale: rows.reduce((s, r) => s + r.sale, 0),
+    paid: rows.reduce((s, r) => s + r.paid, 0),
+    remaining: rows.reduce((s, r) => s + r.remaining, 0),
+    owedCount: rows.filter((r) => r.remaining > 0.0005).length,
+  };
+
+  return { rows, totals };
+}
+
+export async function listCustomerProjectReceivables(
+  client: SupabaseClient,
+  customerId: string
+): Promise<ProjectReceivableRow[]> {
+  const { rows } = await listProjectReceivables(client, {
+    customerId,
+    onlyOwed: true,
+    source: "all",
+  });
+  return rows;
+}

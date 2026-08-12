@@ -21,6 +21,7 @@ import {
   MobileSkeleton,
 } from "@/components/mobile/MobileUI";
 import type { Customer, Supplier } from "@/types";
+import { BUSINESS_LINE_LABELS, normalizeBusinessLines } from "@/lib/business-lines";
 
 type Kind = "customers" | "suppliers";
 type BalanceFilter = "all" | "debt" | "credit" | "zero";
@@ -72,6 +73,9 @@ export default function MobilePartiesPage() {
                       phone: c.phone || undefined,
                       balance: c.balance,
                       linked_supplier_id: c.linked_supplier_id ?? null,
+                      business_lines: Array.isArray(c.business_lines)
+                        ? c.business_lines
+                        : [],
                       created_at: "",
                     }) as Customer
                 )
@@ -306,14 +310,26 @@ export default function MobilePartiesPage() {
             {list.length === 0 ? (
               <MobileEmpty message="لا توجد نتائج" />
             ) : (
-              list.map((p) => (
+              list.map((p) => {
+                const lines =
+                  p._kind === "customer"
+                    ? normalizeBusinessLines(
+                        (p as Customer).business_lines
+                      )
+                    : [];
+                const lineLabel =
+                  lines.length > 0
+                    ? lines.map((l) => BUSINESS_LINE_LABELS[l]).join(" · ")
+                    : "";
+                const baseSub = p._displayLabel
+                  ? `${p.phone || "بدون هاتف"} · ${p._displayLabel}`
+                  : p.phone || "بدون هاتف";
+                return (
                 <MobileListRow
                   key={p.id}
                   title={p._dual ? `${p.name} · عميل+مورد` : p.name}
                   subtitle={
-                    p._displayLabel
-                      ? `${p.phone || "بدون هاتف"} · ${p._displayLabel}`
-                      : p.phone || "بدون هاتف"
+                    lineLabel ? `${baseSub} · ${lineLabel}` : baseSub
                   }
                   amount={Math.abs(Number(p._displayBalance))}
                   amountTone={
@@ -331,7 +347,8 @@ export default function MobilePartiesPage() {
                     router.push(`/m/parties/${p._kind}/${p.id}`)
                   }
                 />
-              ))
+              );
+              })
             )}
           </div>
         )}

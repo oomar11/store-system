@@ -213,6 +213,9 @@ export type SnapshotParty = {
   } | null;
   linked_supplier_id?: string | null;
   linked_customer_id?: string | null;
+  /** سلك / محل / ورشة */
+  business_lines?: Array<"wire" | "store" | "workshop">;
+  business_lines_locked?: boolean;
   is_active?: boolean;
   last_activity_at?: string | null;
 };

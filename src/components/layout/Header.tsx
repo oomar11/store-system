@@ -23,6 +23,7 @@ const pageTitles: Record<string, string> = {
   suppliers: "الموردون",
   treasury: "الخزينة",
   reports: "التقارير",
+  receivables: "فلوس لِيا برا",
   settings: "الإعدادات",
   expenses: "المصروفات",
   shifts: "الوردية",

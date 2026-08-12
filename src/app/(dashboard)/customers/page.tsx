@@ -33,6 +33,17 @@ import {
 } from "@/lib/offline";
 import type { Customer, PriceTier, Settings } from "@/types";
 import { Users } from "lucide-react";
+import {
+  BusinessLineBadges,
+  BusinessLineEditor,
+} from "@/components/parties/BusinessLineBadges";
+import {
+  normalizeBusinessLines,
+  type BusinessLine,
+} from "@/lib/business-lines";
+import {
+  saveCustomerBusinessLinesManual,
+} from "@/lib/customer-business-lines";
 
 export default function CustomersPage() {
   const router = useRouter();
@@ -51,6 +62,9 @@ export default function CustomersPage() {
   const [activeFilter, setActiveFilter] = useState<"active" | "inactive" | "all">(
     "active"
   );
+  const [lineFilter, setLineFilter] = useState<
+    "" | BusinessLine | "multi"
+  >("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -90,6 +104,8 @@ export default function CustomersPage() {
                 balance: c.balance,
                 price_tier_id: c.price_tier_id ?? null,
                 linked_supplier_id: c.linked_supplier_id ?? null,
+                business_lines: normalizeBusinessLines(c.business_lines),
+                business_lines_locked: c.business_lines_locked === true,
                 is_active: c.is_active !== false,
                 last_activity_at: c.last_activity_at ?? null,
                 created_at: "",
@@ -371,7 +387,14 @@ export default function CustomersPage() {
     } else if (activeFilter === "inactive") {
       matchesActive = c.is_active === false;
     }
-    return matchesSearch && matchesBalance && matchesActive;
+    let matchesLine = true;
+    const lines = normalizeBusinessLines(c.business_lines);
+    if (lineFilter === "multi") {
+      matchesLine = lines.length > 1;
+    } else if (lineFilter) {
+      matchesLine = lines.includes(lineFilter);
+    }
+    return matchesSearch && matchesBalance && matchesActive && matchesLine;
   });
 
   const { items: sortedCustomers, sortConfig, requestSort } = useSort(filteredCustomers);
@@ -449,6 +472,19 @@ export default function CustomersPage() {
           <option value="inactive">الموقوفون</option>
           <option value="all">الكل</option>
         </select>
+        <select
+          value={lineFilter}
+          onChange={(e) =>
+            setLineFilter(e.target.value as "" | BusinessLine | "multi")
+          }
+          className="rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none"
+        >
+          <option value="">كل التصنيفات</option>
+          <option value="wire">سلك</option>
+          <option value="store">محل</option>
+          <option value="workshop">ورشة</option>
+          <option value="multi">أكتر من حاجة</option>
+        </select>
       </div>
 
       {canWriteCustomers && (
@@ -501,6 +537,7 @@ export default function CustomersPage() {
                   />
                 </th>
                 <SortableHeader label="الاسم" field="name" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
+                <th className="px-4 py-3 text-right font-medium text-gray-700">التصنيف</th>
                 <SortableHeader label="الهاتف" field="phone" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
                 <SortableHeader label="العنوان" field="address" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
                 <SortableHeader label="الرصيد" field="balance" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
@@ -552,6 +589,9 @@ export default function CustomersPage() {
                         </span>
                       )}
                     </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <BusinessLineBadges lines={customer.business_lines} />
                   </td>
                   <td className="px-4 py-3 text-gray-600" dir="ltr">
                     {customer.phone || "-"}
@@ -725,6 +765,15 @@ function CustomerForm({
     openingSide: (opening < 0 ? "credit" : "debt") as "debt" | "credit",
     price_tier_id: customer?.price_tier_id || "",
   });
+  const [businessLines, setBusinessLines] = useState<BusinessLine[]>(
+    normalizeBusinessLines(
+      customer?.business_lines?.length
+        ? customer.business_lines
+        : customer
+          ? []
+          : ["store"]
+    )
+  );
   const [tiers, setTiers] = useState<PriceTier[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -766,8 +815,23 @@ function CustomerForm({
         setLoading(false);
         return;
       }
+      try {
+        await saveCustomerBusinessLinesManual(
+          supabase,
+          customer.id,
+          businessLines,
+          { locked: true }
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "تعذر حفظ التصنيف");
+        setLoading(false);
+        return;
+      }
     } else {
       data.balance = opening_balance;
+      data.business_lines = businessLines;
+      data.business_lines_manual = businessLines;
+      data.business_lines_locked = businessLines.length > 0;
       const { error: insertError } = await supabase.from("customers").insert(data);
       if (insertError) {
         setError(insertError.message);
@@ -798,6 +862,19 @@ function CustomerForm({
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
               required
             />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">
+              التصنيف
+            </label>
+            <BusinessLineEditor
+              value={businessLines}
+              onChange={setBusinessLines}
+              disabled={loading}
+            />
+            <p className="mt-1 text-[10px] text-gray-400">
+              سلك = بلسية · محل = المتجر · ورشة = PVC — ممكن أكتر من حاجة
+            </p>
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">

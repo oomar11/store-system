@@ -13,6 +13,7 @@ import {
   upsertWorkshopParty,
   type WorkshopSourceSystem,
 } from "@/lib/workshop-parties";
+import { normalizeBusinessLines } from "@/lib/business-lines";
 
 export const runtime = "nodejs";
 
@@ -40,6 +41,8 @@ export async function GET(request: NextRequest) {
   }
 
   const q = request.nextUrl.searchParams.get("q") || "";
+  const idParam = request.nextUrl.searchParams.get("id") || "";
+  const idsParam = request.nextUrl.searchParams.get("ids") || "";
   const limit = Math.min(
     100,
     Math.max(1, Number(request.nextUrl.searchParams.get("limit")) || 30)
@@ -47,8 +50,39 @@ export async function GET(request: NextRequest) {
 
   try {
     const client = await createServiceClient();
+
+    const ids = [
+      ...idParam.split(","),
+      ...idsParam.split(","),
+    ]
+      .map((v) => v.trim())
+      .filter(Boolean);
+
+    if (ids.length > 0) {
+      const unique = Array.from(new Set(ids)).slice(0, 100);
+      const { data, error } = await client
+        .from("customers")
+        .select(
+          "id, name, phone, address, notes, balance, is_active, created_at, business_lines"
+        )
+        .in("id", unique);
+      if (error) throw new Error(error.message);
+      const customers = (data || []).map((row) => ({
+        ...row,
+        business_lines: normalizeBusinessLines(row.business_lines),
+      }));
+      return withWorkshopCors(NextResponse.json({ customers }));
+    }
+
     const customers = await searchStoreParties(client, "customer", q, limit);
-    return withWorkshopCors(NextResponse.json({ customers }));
+    return withWorkshopCors(
+      NextResponse.json({
+        customers: customers.map((c) => ({
+          ...c,
+          business_lines: normalizeBusinessLines(c.business_lines),
+        })),
+      })
+    );
   } catch (e) {
     return withWorkshopCors(
       NextResponse.json(
@@ -114,7 +148,10 @@ export async function POST(request: NextRequest) {
     return withWorkshopCors(
       NextResponse.json({
         ok: true,
-        customer: result.party,
+        customer: {
+          ...result.party,
+          business_lines: normalizeBusinessLines(result.party.business_lines),
+        },
         store_customer_id: result.party.id,
         created: result.created,
         mapped: result.mapped,
