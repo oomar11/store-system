@@ -9,9 +9,10 @@ const NOTES_MARKER_RE =
   /(?:^|\n)<!--biz:([a-z,_]*)-->(?:\n|$)/i;
 
 function isMissingBusinessLinesColumn(message: string | undefined): boolean {
+  const msg = message || "";
   return (
-    /column ["']?business_lines["']? .* does not exist/i.test(message || "") ||
-    /Could not find the ['"]?business_lines['"]? column/i.test(message || "")
+    /business_lines/i.test(msg) &&
+    (/does not exist/i.test(msg) || /Could not find the/i.test(msg))
   );
 }
 

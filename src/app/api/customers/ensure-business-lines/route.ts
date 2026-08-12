@@ -25,8 +25,9 @@ async function probeBusinessLinesSchema(): Promise<ProbeResult> {
     .limit(1);
   const message = colProbe.error?.message || null;
   const missing =
-    /column ["']?business_lines["']? .* does not exist/i.test(message || "") ||
-    /Could not find the ['"]?business_lines['"]? column/i.test(message || "");
+    !!message &&
+    /business_lines/i.test(message) &&
+    (/does not exist/i.test(message) || /Could not find the/i.test(message));
   return {
     ready: !missing && !colProbe.error,
     probe: message,
