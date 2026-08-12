@@ -14,11 +14,23 @@ import {
   type WorkshopSourceSystem,
 } from "@/lib/workshop-parties";
 import { normalizeBusinessLines } from "@/lib/business-lines";
+import { businessLinesFromNotes } from "@/lib/customer-business-lines";
 
 export const runtime = "nodejs";
 
 function parseSource(raw: unknown): WorkshopSourceSystem {
   return String(raw || "").toLowerCase() === "plisse" ? "plisse" : "aa";
+}
+
+function withBusinessLines<T extends { notes?: string | null; business_lines?: unknown }>(
+  row: T
+) {
+  const fromCols = normalizeBusinessLines(row.business_lines);
+  const fromNotes = businessLinesFromNotes(row.notes);
+  return {
+    ...row,
+    business_lines: fromCols.length > 0 ? fromCols : fromNotes,
+  };
 }
 
 export async function OPTIONS() {
@@ -60,27 +72,31 @@ export async function GET(request: NextRequest) {
 
     if (ids.length > 0) {
       const unique = Array.from(new Set(ids)).slice(0, 100);
-      const { data, error } = await client
+      let { data, error } = await client
         .from("customers")
         .select(
           "id, name, phone, address, notes, balance, is_active, created_at, business_lines"
         )
         .in("id", unique);
+      if (error && /business_lines/i.test(error.message || "")) {
+        const retry = await client
+          .from("customers")
+          .select(
+            "id, name, phone, address, notes, balance, is_active, created_at"
+          )
+          .in("id", unique);
+        data = retry.data as typeof data;
+        error = retry.error;
+      }
       if (error) throw new Error(error.message);
-      const customers = (data || []).map((row) => ({
-        ...row,
-        business_lines: normalizeBusinessLines(row.business_lines),
-      }));
+      const customers = (data || []).map((row) => withBusinessLines(row));
       return withWorkshopCors(NextResponse.json({ customers }));
     }
 
     const customers = await searchStoreParties(client, "customer", q, limit);
     return withWorkshopCors(
       NextResponse.json({
-        customers: customers.map((c) => ({
-          ...c,
-          business_lines: normalizeBusinessLines(c.business_lines),
-        })),
+        customers: customers.map((c) => withBusinessLines(c)),
       })
     );
   } catch (e) {

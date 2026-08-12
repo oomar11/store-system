@@ -80,7 +80,31 @@ export async function searchStoreParties(
     }
   }
 
-  const { data, error } = await builder;
+  let { data, error } = await builder;
+  if (
+    kind === "customer" &&
+    error &&
+    /business_lines/i.test(error.message || "")
+  ) {
+    let retry = client
+      .from(table)
+      .select("id, name, phone, address, notes, balance, is_active, created_at")
+      .eq("is_active", true)
+      .order("name", { ascending: true })
+      .limit(limit);
+    if (query) {
+      if (phone.length >= 4) {
+        retry = retry.or(
+          `name.ilike.%${query}%,phone.ilike.%${query}%,phone_normalized.ilike.%${phone}%`
+        );
+      } else {
+        retry = retry.ilike("name", `%${query}%`);
+      }
+    }
+    const retried = await retry;
+    data = retried.data as typeof data;
+    error = retried.error;
+  }
   if (error) throw new Error(error.message || "تعذر البحث");
   return (data || []) as unknown as StorePartyRow[];
 }
