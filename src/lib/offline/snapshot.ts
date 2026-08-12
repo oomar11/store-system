@@ -111,6 +111,13 @@ export async function rebuildCompatSnapshot(): Promise<SnapshotBundle> {
     const priceTier = priceTierId
       ? tierMetaById.get(priceTierId) ?? null
       : null;
+    const rawLines = Array.isArray(c.business_lines)
+      ? (c.business_lines as string[])
+      : [];
+    const business_lines = rawLines.filter(
+      (v): v is "wire" | "store" | "workshop" =>
+        v === "wire" || v === "store" || v === "workshop"
+    );
     return {
       id: String(c.id),
       name: String(c.name || ""),
@@ -120,6 +127,8 @@ export async function rebuildCompatSnapshot(): Promise<SnapshotBundle> {
       price_tier_id: priceTierId,
       price_tier: priceTier,
       linked_supplier_id: (c.linked_supplier_id as string | null) ?? null,
+      business_lines,
+      business_lines_locked: c.business_lines_locked === true,
       is_active: c.is_active !== false,
       last_activity_at: (c.last_activity_at as string | null) ?? null,
     };

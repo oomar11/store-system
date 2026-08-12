@@ -72,6 +72,22 @@ import { useToast } from "@/components/ui/Toast";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { useAuth } from "@/hooks/useAuth";
 import { Modal } from "@/components/ui/Modal";
+import {
+  BusinessLineBadges,
+  BusinessLineEditor,
+} from "@/components/parties/BusinessLineBadges";
+import {
+  normalizeBusinessLines,
+  type BusinessLine,
+} from "@/lib/business-lines";
+import {
+  saveCustomerBusinessLinesManual,
+  unlockAndRefreshCustomerBusinessLines,
+} from "@/lib/customer-business-lines";
+import {
+  listCustomerProjectReceivables,
+  type ProjectReceivableRow,
+} from "@/lib/project-receivables";
 
 type PartyKind = "customer" | "supplier";
 type TypeFilter =
@@ -136,6 +152,11 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
   const [linkedParty, setLinkedParty] = useState<(Customer | Supplier) | null>(
     null
   );
+  const [projectReceivables, setProjectReceivables] = useState<
+    ProjectReceivableRow[]
+  >([]);
+  const [editLines, setEditLines] = useState<BusinessLine[]>([]);
+  const [linesBusy, setLinesBusy] = useState(false);
   const [rows, setRows] = useState<PartyInvoiceRow[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -215,6 +236,14 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
             kind === "customer" ? fromSnap.linked_supplier_id : undefined,
           linked_customer_id:
             kind === "supplier" ? fromSnap.linked_customer_id : undefined,
+          business_lines:
+            kind === "customer"
+              ? normalizeBusinessLines(fromSnap.business_lines)
+              : undefined,
+          business_lines_locked:
+            kind === "customer"
+              ? fromSnap.business_lines_locked === true
+              : undefined,
           created_at: "",
         } as Customer | Supplier;
         const linkedData = linkedFromSnap
@@ -257,6 +286,12 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
               }) as PartyInvoiceRow
           );
         setParty(partyData);
+        if (kind === "customer") {
+          setEditLines(
+            normalizeBusinessLines((partyData as Customer).business_lines)
+          );
+          setProjectReceivables([]);
+        }
         setLinkedParty(linkedData);
         setRows(
           [...openingRows, ...recent].sort(
@@ -383,6 +418,19 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
       setLinkedParty(linkedData);
       setRows(merged);
       setPartyPayments(payments);
+      if (kind === "customer") {
+        setEditLines(
+          normalizeBusinessLines((partyData as Customer).business_lines)
+        );
+        try {
+          const owed = await listCustomerProjectReceivables(supabase, partyId);
+          setProjectReceivables(owed);
+        } catch {
+          setProjectReceivables([]);
+        }
+      } else {
+        setProjectReceivables([]);
+      }
       if (settingsRes.data) setSettings(settingsRes.data);
       setLoading(false);
     } catch {
@@ -1008,6 +1056,14 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
                   الحساب المربوط: {linkedParty.name}
                 </Link>
               ) : null}
+              {kind === "customer" ? (
+                <div className="mt-2">
+                  <BusinessLineBadges
+                    lines={(party as Customer).business_lines}
+                    size="md"
+                  />
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -1161,6 +1217,143 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
               </div>
             </div>
           ) : null}
+        </div>
+      ) : null}
+
+      {kind === "customer" && canWriteCustomers ? (
+        <div className="rounded-xl border border-[#e1e6ee] bg-white px-4 py-3 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-bold text-[#172033]">تصنيف العميل</h2>
+              <p className="text-xs text-[#687386]">
+                سلك · محل · ورشة — التعديل يقفل التحديث التلقائي
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={linesBusy}
+                onClick={() => {
+                  void (async () => {
+                    setLinesBusy(true);
+                    try {
+                      const next = await saveCustomerBusinessLinesManual(
+                        supabase,
+                        partyId,
+                        editLines,
+                        { locked: true }
+                      );
+                      setParty((prev) =>
+                        prev
+                          ? ({
+                              ...prev,
+                              business_lines: next,
+                              business_lines_manual: next,
+                              business_lines_locked: true,
+                            } as Customer)
+                          : prev
+                      );
+                      toastSuccess("تم حفظ التصنيف");
+                    } catch (err) {
+                      toastError(
+                        err instanceof Error ? err.message : "تعذر حفظ التصنيف"
+                      );
+                    } finally {
+                      setLinesBusy(false);
+                    }
+                  })();
+                }}
+                className="rounded-lg bg-[#1473e6] px-3 py-1.5 text-xs font-bold text-white hover:bg-[#0b5fc4] disabled:opacity-50"
+              >
+                حفظ التصنيف
+              </button>
+              <button
+                type="button"
+                disabled={linesBusy}
+                onClick={() => {
+                  void (async () => {
+                    setLinesBusy(true);
+                    try {
+                      const next = await unlockAndRefreshCustomerBusinessLines(
+                        supabase,
+                        partyId
+                      );
+                      setEditLines(next);
+                      setParty((prev) =>
+                        prev
+                          ? ({
+                              ...prev,
+                              business_lines: next,
+                              business_lines_locked: false,
+                            } as Customer)
+                          : prev
+                      );
+                      toastSuccess("تم إعادة الحساب تلقائياً");
+                    } catch (err) {
+                      toastError(
+                        err instanceof Error
+                          ? err.message
+                          : "تعذر إعادة الحساب"
+                      );
+                    } finally {
+                      setLinesBusy(false);
+                    }
+                  })();
+                }}
+                className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+              >
+                تلقائي من التعامل
+              </button>
+            </div>
+          </div>
+          <div className="mt-3">
+            <BusinessLineEditor
+              value={editLines}
+              onChange={setEditLines}
+              disabled={linesBusy}
+            />
+          </div>
+        </div>
+      ) : null}
+
+      {kind === "customer" && projectReceivables.length > 0 ? (
+        <div className="overflow-hidden rounded-xl border border-[#e1e6ee] bg-white shadow-sm">
+          <div className="border-b border-[#e1e6ee] px-4 py-3">
+            <h2 className="font-bold text-[#172033]">مشاريع عليها فلوس</h2>
+            <p className="text-xs text-[#687386]">
+              المتبقي لكل مشروع/فاتورة عند هذا العميل
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-600">
+                <tr>
+                  <th className="px-3 py-2 text-right font-medium">المصدر</th>
+                  <th className="px-3 py-2 text-right font-medium">المشروع</th>
+                  <th className="px-3 py-2 text-right font-medium">البيع</th>
+                  <th className="px-3 py-2 text-right font-medium">المدفوع</th>
+                  <th className="px-3 py-2 text-right font-medium">المتبقي</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {projectReceivables.map((row) => (
+                  <tr key={row.id}>
+                    <td className="px-3 py-2">
+                      <BusinessLineBadges lines={[row.source]} />
+                    </td>
+                    <td className="px-3 py-2 font-medium text-[#172033]">
+                      {row.projectLabel}
+                    </td>
+                    <td className="px-3 py-2">{formatCurrency(row.sale)}</td>
+                    <td className="px-3 py-2">{formatCurrency(row.paid)}</td>
+                    <td className="px-3 py-2 font-bold text-red-600">
+                      {formatCurrency(row.remaining)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       ) : null}
 

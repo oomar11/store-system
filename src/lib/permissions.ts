@@ -257,6 +257,7 @@ export function permissionForPath(pathname: string): AppPermission | null {
   if (pathname.startsWith("/suppliers")) return "suppliers";
   if (pathname.startsWith("/treasury")) return "treasury";
   if (pathname.startsWith("/expenses")) return "expenses";
+  if (pathname.startsWith("/receivables")) return "reports";
   if (pathname.startsWith("/reports")) return "reports";
   if (pathname.startsWith("/settings")) return "settings";
   if (pathname.startsWith("/shifts")) return "shifts";

@@ -6,6 +6,7 @@ import {
   ClipboardList,
   Clock3,
   FileText,
+  HandCoins,
   LayoutDashboard,
   Package,
   ReceiptText,
@@ -64,6 +65,7 @@ export const storeNavGroups: NavGroup[] = [
     items: [
       { name: "الخزينة", href: "/treasury", icon: CircleDollarSign },
       { name: "المصروفات", href: "/expenses", icon: Wallet },
+      { name: "فلوس لِيا برا", href: "/receivables", icon: HandCoins },
       { name: "التقارير", href: "/reports", icon: FileText },
     ],
   },

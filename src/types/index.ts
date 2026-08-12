@@ -73,6 +73,8 @@ export interface TierProductDiscount {
   product?: Product;
 }
 
+export type CustomerBusinessLine = "wire" | "store" | "workshop";
+
 export interface Customer {
   id: string;
   name: string;
@@ -89,6 +91,12 @@ export interface Customer {
   price_tier?: PriceTier | null;
   /** ربط 1:1 بمورد لنفس الشخص (رصيد صافي ليّا/عليّا) */
   linked_supplier_id?: string | null;
+  /** تصنيف الشغل: سلك / محل / ورشة (متعدد) */
+  business_lines?: CustomerBusinessLine[];
+  /** تاجات يدوية تُدمج مع الاشتقاق التلقائي */
+  business_lines_manual?: CustomerBusinessLine[];
+  /** عند true لا يُعاد حساب business_lines تلقائياً */
+  business_lines_locked?: boolean;
   /** عند false لا يظهر في نقطة البيع والفواتير */
   is_active?: boolean;
   /** آخر فاتورة أو دفعة */

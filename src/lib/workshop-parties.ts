@@ -1,4 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  sourceSystemToBusinessLine,
+  type BusinessLine,
+} from "@/lib/business-lines";
+import { refreshCustomerBusinessLines } from "@/lib/customer-business-lines";
 
 export type WorkshopSourceSystem = "aa" | "plisse";
 export type PartyKind = "customer" | "supplier";
@@ -12,10 +17,27 @@ export type StorePartyRow = {
   balance: number;
   is_active: boolean;
   created_at: string;
+  business_lines?: BusinessLine[];
 };
 
 export function normalizePartyPhone(phone: string | null | undefined): string {
   return String(phone || "").replace(/\D/g, "");
+}
+
+async function touchCustomerBusinessLines(
+  client: SupabaseClient,
+  partyId: string,
+  sourceSystem?: WorkshopSourceSystem | null
+) {
+  try {
+    await refreshCustomerBusinessLines(client, partyId, {
+      forceDerivedLine: sourceSystem
+        ? sourceSystemToBusinessLine(sourceSystem)
+        : null,
+    });
+  } catch {
+    // Classification is best-effort; never block party/ledger writes
+  }
 }
 
 function digitsMatch(a: string, b: string): boolean {
@@ -39,7 +61,11 @@ export async function searchStoreParties(
 
   let builder = client
     .from(table)
-    .select("id, name, phone, address, notes, balance, is_active, created_at")
+    .select(
+      kind === "customer"
+        ? "id, name, phone, address, notes, balance, is_active, created_at, business_lines"
+        : "id, name, phone, address, notes, balance, is_active, created_at"
+    )
     .eq("is_active", true)
     .order("name", { ascending: true })
     .limit(limit);
@@ -56,7 +82,7 @@ export async function searchStoreParties(
 
   const { data, error } = await builder;
   if (error) throw new Error(error.message || "تعذر البحث");
-  return (data || []) as StorePartyRow[];
+  return (data || []) as unknown as StorePartyRow[];
 }
 
 export async function upsertWorkshopParty(
@@ -107,6 +133,13 @@ export async function upsertWorkshopParty(
         )
         .single();
       if (error) throw new Error(error.message);
+      if (params.kind === "customer") {
+        await touchCustomerBusinessLines(
+          client,
+          mapped.store_party_id,
+          params.sourceSystem
+        );
+      }
       return {
         party: existing as StorePartyRow,
         created: false,
@@ -194,6 +227,10 @@ export async function upsertWorkshopParty(
     );
     if (mapErr) throw new Error(mapErr.message);
     mapped = true;
+  }
+
+  if (params.kind === "customer") {
+    await touchCustomerBusinessLines(client, party.id, params.sourceSystem);
   }
 
   return { party, created, mapped };
@@ -447,6 +484,10 @@ export async function applyCrossAppLedgerEntryDirect(
     await adjustPartyBalance(client, partyType, partyId, newSigned);
   }
 
+  if (partyType === "customer") {
+    await touchCustomerBusinessLines(client, partyId, sourceSystem);
+  }
+
   return {
     id: entryId,
     delta: newSigned - oldSigned,
@@ -483,6 +524,13 @@ export async function applyCrossAppLedgerEntry(
   );
 
   if (!error) {
+    if (input.partyType === "customer") {
+      await touchCustomerBusinessLines(
+        client,
+        input.partyId,
+        input.sourceSystem
+      );
+    }
     return data as LedgerApplyResult;
   }
 
