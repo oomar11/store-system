@@ -338,3 +338,184 @@ export function businessLinesFromNotes(
 ): BusinessLine[] {
   return parseNotesBusinessLines(notes);
 }
+
+/**
+ * Bulk-derive tags for all customers.
+ * Uses columns when present; otherwise embeds <!--biz:...> in notes.
+ * Safe to re-run. Does not overwrite locked columns / existing notes markers
+ * unless `force` is true.
+ */
+export async function backfillAllCustomerBusinessLines(
+  client: SupabaseClient,
+  options?: { force?: boolean; limit?: number }
+): Promise<{
+  mode: "columns" | "notes";
+  scanned: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+}> {
+  const force = options?.force === true;
+  const limit = Math.min(5000, Math.max(1, options?.limit || 2000));
+  const errors: string[] = [];
+
+  const probe = await client
+    .from("customers")
+    .select("business_lines")
+    .limit(1);
+  const columnsReady =
+    !probe.error || !isMissingBusinessLinesColumn(probe.error.message);
+  const mode: "columns" | "notes" = columnsReady ? "columns" : "notes";
+
+  const { data: customersRaw, error: custErr } = await client
+    .from("customers")
+    .select(
+      columnsReady
+        ? "id, notes, balance, opening_balance, business_lines, business_lines_manual, business_lines_locked"
+        : "id, notes, balance, opening_balance"
+    )
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (custErr) throw new Error(custErr.message || "تعذر قراءة العملاء");
+
+  type CustRow = {
+    id: string;
+    notes?: string | null;
+    balance?: number | null;
+    opening_balance?: number | null;
+    business_lines?: unknown;
+    business_lines_manual?: unknown;
+    business_lines_locked?: boolean | null;
+  };
+  const rows = (customersRaw || []) as unknown as CustRow[];
+  if (rows.length === 0) {
+    return { mode, scanned: 0, updated: 0, skipped: 0, errors };
+  }
+
+  const ids = rows.map((r) => String(r.id));
+
+  const [mapRes, ledgerRes, invRes, payRes] = await Promise.all([
+    client
+      .from("workshop_party_map")
+      .select("store_party_id, source_system")
+      .eq("party_type", "customer")
+      .in("store_party_id", ids),
+    client
+      .from("cross_app_ledger_entries")
+      .select("party_id, source_system")
+      .eq("party_type", "customer")
+      .in("party_id", ids),
+    client
+      .from("invoices")
+      .select("customer_id")
+      .eq("status", "completed")
+      .in("type", ["sale", "sale_return"])
+      .in("customer_id", ids),
+    client
+      .from("party_payments")
+      .select("party_id")
+      .eq("party_type", "customer")
+      .in("party_id", ids),
+  ]);
+
+  const systemsByCustomer = new Map<string, Set<string>>();
+  const storeActivity = new Set<string>();
+
+  for (const row of mapRes.data || []) {
+    const id = String(row.store_party_id || "");
+    if (!id) continue;
+    const set = systemsByCustomer.get(id) || new Set<string>();
+    set.add(String(row.source_system || "").toLowerCase());
+    systemsByCustomer.set(id, set);
+  }
+  for (const row of ledgerRes.data || []) {
+    const id = String(row.party_id || "");
+    if (!id) continue;
+    const set = systemsByCustomer.get(id) || new Set<string>();
+    set.add(String(row.source_system || "").toLowerCase());
+    systemsByCustomer.set(id, set);
+  }
+  for (const row of invRes.data || []) {
+    if (row.customer_id) storeActivity.add(String(row.customer_id));
+  }
+  for (const row of payRes.data || []) {
+    if (row.party_id) storeActivity.add(String(row.party_id));
+  }
+
+  let updated = 0;
+  let skipped = 0;
+
+  for (const row of rows) {
+    const id = String(row.id);
+    const systems = systemsByCustomer.get(id) || new Set<string>();
+    const derived: BusinessLine[] = [];
+    if (systems.has("plisse")) derived.push("wire");
+    if (systems.has("aa")) derived.push("workshop");
+    if (
+      storeActivity.has(id) ||
+      Math.abs(Number(row.balance) || 0) > 0.0005 ||
+      Math.abs(Number(row.opening_balance) || 0) > 0.0005
+    ) {
+      derived.push("store");
+    }
+    const next = normalizeBusinessLines(derived);
+    if (next.length === 0) {
+      skipped++;
+      continue;
+    }
+
+    if (mode === "columns") {
+      const locked = row.business_lines_locked === true;
+      const current = normalizeBusinessLines(row.business_lines);
+      const manual = normalizeBusinessLines(row.business_lines_manual);
+      if (locked && !force) {
+        skipped++;
+        continue;
+      }
+      const merged = mergeBusinessLines(next, manual);
+      const same =
+        current.length === merged.length &&
+        current.every((v, i) => v === merged[i]);
+      if (same) {
+        skipped++;
+        continue;
+      }
+      const { error } = await client
+        .from("customers")
+        .update({ business_lines: merged })
+        .eq("id", id);
+      if (error) {
+        errors.push(`${id}: ${error.message}`);
+        continue;
+      }
+      updated++;
+      continue;
+    }
+
+    // notes mode
+    const existing = parseNotesBusinessLines(row.notes);
+    if (existing.length > 0 && !force) {
+      skipped++;
+      continue;
+    }
+    const notes = embedNotesBusinessLines(row.notes, next);
+    const { error } = await client
+      .from("customers")
+      .update({ notes })
+      .eq("id", id);
+    if (error) {
+      errors.push(`${id}: ${error.message}`);
+      continue;
+    }
+    updated++;
+  }
+
+  return {
+    mode,
+    scanned: rows.length,
+    updated,
+    skipped,
+    errors: errors.slice(0, 20),
+  };
+}

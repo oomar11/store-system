@@ -112,40 +112,32 @@ export default function CustomersPage() {
     try {
       const res = await fetch("/api/customers/ensure-business-lines", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "activate" }),
       });
       const json = (await res.json()) as {
         ok?: boolean;
         ready?: boolean;
         applied?: boolean;
         error?: string;
+        message?: string;
         sqlEditor?: string;
-        sql?: string;
+        backfill?: { updated?: number; scanned?: number; mode?: string };
       };
       if (json.sqlEditor) setSchemaSqlEditor(json.sqlEditor);
-      if (!res.ok || !json.ok || !json.ready) {
-        if (json.sql && typeof navigator !== "undefined" && navigator.clipboard) {
-          try {
-            await navigator.clipboard.writeText(json.sql);
-            toastInfo("تم نسخ SQL — الصقه في SQL Editor ثم Run");
-          } catch {
-            /* ignore */
-          }
-        }
-        throw new Error(
-          json.error ||
-            "تعذر تفعيل التصنيف تلقائياً — افتح SQL Editor وشغّل الترحيل"
-        );
+      if (!res.ok || !json.ok) {
+        throw new Error(json.error || "تعذر تفعيل التصنيف");
       }
-      setSchemaReady(true);
+      setSchemaReady(json.ready === true);
       toastSuccess(
-        json.applied ? "تم تفعيل تصنيف العملاء على القاعدة" : "التصنيف جاهز"
+        json.message ||
+          (json.ready
+            ? "تم تفعيل تصنيف العملاء"
+            : `تم تفعيل التصنيف (${json.backfill?.updated || 0} عميل)`)
       );
       await fetchCustomers();
     } catch (err) {
       toastError(err instanceof Error ? err.message : "تعذر تفعيل التصنيف");
-      if (schemaSqlEditor) {
-        window.open(schemaSqlEditor, "_blank", "noopener,noreferrer");
-      }
     } finally {
       setSchemaBusy(false);
     }
@@ -501,9 +493,9 @@ export default function CustomersPage() {
         <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="font-bold">تصنيف العملاء مش مفعّل على قاعدة البيانات</p>
+              <p className="font-bold">تصنيف العملاء جاهز للتفعيل بضغطة واحدة</p>
               <p className="mt-0.5 text-amber-900/80">
-                الواجهة ظاهرة لكن الأعمدة لسه متتشغّلتش — فعّل الترحيل مرة واحدة
+                هيتحدد تلقائي مين سلك / محل / ورشة من التعامل — من غير SQL
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -515,14 +507,6 @@ export default function CustomersPage() {
               >
                 {schemaBusy ? "جاري التفعيل…" : "تفعيل التصنيف الآن"}
               </button>
-              <a
-                href={schemaSqlEditor}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-lg border border-amber-400 bg-white px-4 py-2 text-sm font-bold text-amber-900 hover:bg-amber-100"
-              >
-                فتح SQL Editor
-              </a>
             </div>
           </div>
         </div>
