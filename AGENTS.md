@@ -67,7 +67,8 @@ Always verify changes on this host (not `store-system-iota` or Preview URLs).
 - جداول ربط: `workshop_party_map` · `cross_app_ledger_entries`
 - المصادقة: `Authorization: Bearer <secret>` أو `x-workshop-bridge-secret`
 - المفتاح: `workshop_bridge_config` أو `WORKSHOP_BRIDGE_SECRET`
-- Migrations: `20260805_workshop_*.sql` + `20260810_cross_app_parties_ledger.sql`
+- Migrations: `20260805_workshop_*.sql` + `20260810_cross_app_parties_ledger.sql` + `20260811`–`20260812` harden/auth + `20260815_fix_cross_app_ledger_details_and_wipe.sql` (تفاصيل القيد + مسح جداول الجسر في factory reset)
+- إن فشل تسجيل البيع/التحصيل من الورشة برسالة تعارض RPC أو عمود `details`: من الإعدادات → جسر الورشة → «إصلاح دفتر الجسر»، أو الصق migration `20260815` في SQL Editor.
 
 ## Commit Attribution
 AI commits MUST include:
