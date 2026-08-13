@@ -169,8 +169,10 @@ export async function upsertWorkshopParty(
   const name = params.name.trim();
   if (!name) throw new Error("الاسم مطلوب");
 
-  const phone = String(params.phone || "").trim() || null;
-  const phoneNorm = normalizePartyPhone(phone);
+  const phoneRaw = String(params.phone || "").trim() || null;
+  const phoneNorm = normalizePartyPhone(phoneRaw);
+  // Short placeholders like «010» must not merge distinct workshop parties.
+  const phone = phoneNorm && phoneNorm.length >= 9 ? phoneRaw : null;
   const address = String(params.address || "").trim() || null;
   const notes = String(params.notes || "").trim() || null;
   const table = params.kind === "customer" ? "customers" : "suppliers";
