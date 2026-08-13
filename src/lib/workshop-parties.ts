@@ -581,12 +581,15 @@ export async function applyCrossAppLedgerEntry(
   }
 
   // Production may still have dual overloads + missing details column.
-  // Fall back to direct writes (service role) so workshops stop showing «محلياً».
-  if (isBrokenLedgerSchemaError(error.message)) {
-    return applyCrossAppLedgerEntryDirect(client, input);
+  // Always try direct writes so a schema-cache mismatch cannot swallow workshop posts.
+  try {
+    return await applyCrossAppLedgerEntryDirect(client, input);
+  } catch (directErr) {
+    if (isBrokenLedgerSchemaError(error.message) && directErr instanceof Error) {
+      throw directErr;
+    }
+    throw new Error(error.message || "تعذر تسجيل حركة الورشة");
   }
-
-  throw new Error(error.message || "تعذر تسجيل حركة الورشة");
 }
 
 export type ExternalPurchaseLine = {
