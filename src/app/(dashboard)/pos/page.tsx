@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback, Suspense } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase";
 import {
   formatCurrency,
@@ -53,6 +53,7 @@ import {
   type TierPricingContext,
 } from "@/lib/price-tiers";
 import {
+  isPosPathname,
   isPurchaseSideMode,
   modeToPosUrl,
   parsePosMode,
@@ -100,7 +101,6 @@ import { DocumentPrintPreview } from "@/components/print/DocumentPrintPreview";
 import { isReceiptLayout } from "@/lib/print-formats";
 import { QuickPartyForm } from "@/components/parties/QuickPartyForm";
 import { DateField } from "@/components/ui/DateField";
-import { useUrlSearchTerm } from "@/hooks/useUrlSearchTerm";
 import {
   ensureCustomerForSupplier,
   ensureSupplierForCustomer,
@@ -123,6 +123,15 @@ import {
 
 function modeToUrl(mode: PosMode, base = "/pos"): string {
   return modeToPosUrl(mode, base);
+}
+
+function PosQueryHandoff({ onQuery }: { onQuery: (q: string) => void }) {
+  const searchParams = useSearchParams();
+  const q = searchParams.get("q")?.trim() || "";
+  useEffect(() => {
+    if (q) onQuery(q);
+  }, [q, onQuery]);
+  return null;
 }
 
 interface CartItem {
@@ -246,6 +255,8 @@ export default function POSPage({
   embedded?: boolean;
 } = {}) {
   const router = useRouter();
+  const aliveRef = useRef(true);
+  const leavingPosRef = useRef(false);
   const [mode, setMode] = useState<PosMode>("sale");
   const modeRef = useRef<PosMode>(mode);
   modeRef.current = mode;
@@ -255,7 +266,10 @@ export default function POSPage({
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
-  const [searchTerm, setSearchTerm] = useUrlSearchTerm();
+  const [searchTerm, setSearchTerm] = useState("");
+  const applyUrlQuery = useCallback((q: string) => {
+    if (q) setSearchTerm(q);
+  }, []);
   const [partySearch, setPartySearch] = useState("");
   const [showPartyList, setShowPartyList] = useState(false);
   const [showQuickParty, setShowQuickParty] = useState(false);
@@ -342,6 +356,13 @@ export default function POSPage({
   const isEditing = !!(editingInvoiceId || editingDocId);
   const posBase = embedded ? "/m/pos" : "/pos";
   const posUrl = (m: PosMode = mode) => modeToUrl(m, posBase);
+
+  function navigateFromPos(url: string) {
+    // In-flight boot/edit `replace` must not cancel a click to another page.
+    if (!aliveRef.current || leavingPosRef.current) return;
+    router.replace(url);
+  }
+
   const selectedTierName =
     selectedTierId == null
       ? null
@@ -481,6 +502,64 @@ export default function POSPage({
   }, [showTierMenu]);
 
   useEffect(() => {
+    aliveRef.current = true;
+    leavingPosRef.current = false;
+
+    function markIfLeavingPos(url: string) {
+      try {
+        const dest = new URL(url, window.location.href);
+        if (dest.origin !== window.location.origin) return;
+        if (!isPosPathname(dest.pathname, embedded)) {
+          leavingPosRef.current = true;
+        }
+      } catch {
+        /* ignore invalid href */
+      }
+    }
+
+    function onClick(e: MouseEvent) {
+      if (e.button !== 0) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = (e.target as Element | null)?.closest?.("a[href]");
+      if (!a) return;
+      const href = a.getAttribute("href");
+      if (!href || href.startsWith("#") || href.startsWith("mailto:")) return;
+      if (a.getAttribute("target") === "_blank" || a.hasAttribute("download")) {
+        return;
+      }
+      markIfLeavingPos(href);
+    }
+
+    document.addEventListener("click", onClick, true);
+
+    const nav = (
+      window as Window & {
+        navigation?: {
+          addEventListener: (
+            type: "navigate",
+            listener: (event: { destination: { url: string } }) => void
+          ) => void;
+          removeEventListener: (
+            type: "navigate",
+            listener: (event: { destination: { url: string } }) => void
+          ) => void;
+        };
+      }
+    ).navigation;
+
+    const onNavigate = (event: { destination: { url: string } }) => {
+      markIfLeavingPos(event.destination.url);
+    };
+    nav?.addEventListener("navigate", onNavigate);
+
+    return () => {
+      aliveRef.current = false;
+      document.removeEventListener("click", onClick, true);
+      nav?.removeEventListener("navigate", onNavigate);
+    };
+  }, [embedded]);
+
+  useEffect(() => {
     async function boot() {
       await Promise.all([
         fetchProducts(),
@@ -491,6 +570,8 @@ export default function POSPage({
         fetchTierPrices(),
         fetchPriceTiers(),
       ]);
+      if (!aliveRef.current || leavingPosRef.current) return;
+
       searchRef.current?.focus();
 
       const params = new URLSearchParams(window.location.search);
@@ -498,6 +579,8 @@ export default function POSPage({
       const editId = params.get("edit");
       const copyFrom = params.get("copyFrom");
       const copyKind = params.get("copyKind");
+      const urlQ = params.get("q")?.trim();
+      if (urlQ) setSearchTerm(urlQ);
       setMode(nextMode);
 
       if (copyFrom) {
@@ -508,6 +591,7 @@ export default function POSPage({
         else if (nextMode === "purchase") await loadPurchaseForEdit(editId);
         else await loadInvoiceForEdit(editId);
       }
+      if (!aliveRef.current || leavingPosRef.current) return;
       setBootReady(true);
     }
     void boot();
@@ -974,7 +1058,7 @@ export default function POSPage({
   async function loadInvoiceForEdit(invoiceId: string) {
     if (!isBrowserOnline()) {
       toastError("تعديل الفاتورة يحتاج إنترنت — أضف فاتورة جديدة أوفلاين من نقطة البيع");
-      router.replace(posUrl("sale"));
+      navigateFromPos(posUrl("sale"));
       return;
     }
     setEditLoading(true);
@@ -991,7 +1075,7 @@ export default function POSPage({
 
       if (error || !inv) {
         toastError("تعذر فتح الفاتورة للتعديل");
-        router.replace(posUrl("sale"));
+        navigateFromPos(posUrl("sale"));
         return;
       }
 
@@ -1088,7 +1172,7 @@ export default function POSPage({
 
       if (error || !inv) {
         toastError("تعذر فتح فاتورة المشتريات للتعديل");
-        router.replace(posUrl("purchase"));
+        navigateFromPos(posUrl("purchase"));
         return;
       }
 
@@ -1146,13 +1230,13 @@ export default function POSPage({
 
       if (error || !doc) {
         toastError("تعذر فتح عرض السعر للتعديل");
-        router.replace(posUrl("quote"));
+        navigateFromPos(posUrl("quote"));
         return;
       }
 
       if (doc.stage === "converted") {
         toastError("عرض السعر محوّل لفاتورة ولا يمكن تعديله من هنا.");
-        router.replace(
+        navigateFromPos(
           embedded ? "/m/invoices?tab=quote" : "/sales?tab=quotes"
         );
         return;
@@ -1209,13 +1293,13 @@ export default function POSPage({
 
       if (error || !doc) {
         toastError("تعذر فتح طلب المشتريات للتعديل");
-        router.replace(posUrl("purchase_order"));
+        navigateFromPos(posUrl("purchase_order"));
         return;
       }
 
       if (doc.stage === "converted") {
         toastError("طلب المشتريات محوّل لفاتورة ولا يمكن تعديله من هنا.");
-        router.replace(
+        navigateFromPos(
           embedded ? "/m/invoices?tab=purchase_order" : "/purchases?tab=orders"
         );
         return;
@@ -1260,7 +1344,7 @@ export default function POSPage({
       !canAccess(subject, "purchases")
     ) {
       toastError("ليس لديك صلاحية المشتريات");
-      router.replace(posUrl("sale"));
+      navigateFromPos(posUrl("sale"));
       return;
     }
 
@@ -1371,7 +1455,7 @@ export default function POSPage({
 
       if (!sourceMode || lines.length === 0) {
         toastError("تعذر نسخ المستند — لا توجد بنود");
-        router.replace(posUrl(asMode));
+        navigateFromPos(posUrl(asMode));
         return;
       }
 
@@ -1421,7 +1505,7 @@ export default function POSPage({
 
       if (cartLines.length === 0) {
         toastError("تعذر نسخ المستند — أصناف غير متاحة");
-        router.replace(posUrl(asMode));
+        navigateFromPos(posUrl(asMode));
         return;
       }
 
@@ -1480,11 +1564,11 @@ export default function POSPage({
       setNotes(notesCombined);
 
       toastSuccess(`تم تجهيز السلة (${cartLines.length} صنف) — راجع واحفظ`);
-      router.replace(posUrl(asMode));
+      navigateFromPos(posUrl(asMode));
       searchRef.current?.focus();
     } catch {
       toastError("تعذر نسخ المستند");
-      router.replace(posUrl(asMode));
+      navigateFromPos(posUrl(asMode));
     } finally {
       setEditLoading(false);
     }
@@ -1528,7 +1612,7 @@ export default function POSPage({
     setEditingDocId(null);
     setLastInvoice("");
     setMode(nextMode);
-    router.replace(posUrl(nextMode));
+    navigateFromPos(posUrl(nextMode));
     searchRef.current?.focus();
   }
 
@@ -2503,7 +2587,7 @@ export default function POSPage({
     setEditingDocId(null);
     setLastInvoice("");
     if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("edit")) {
-      router.replace(posUrl(mode));
+      navigateFromPos(posUrl(mode));
     }
     searchRef.current?.focus();
   }
@@ -2822,7 +2906,10 @@ export default function POSPage({
         : ReceiptText;
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="relative flex flex-col gap-3">
+      <Suspense fallback={null}>
+        <PosQueryHandoff onQuery={applyUrlQuery} />
+      </Suspense>
       {isEditing && (
         <div className="sticky top-0 z-30 flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 shadow-sm">
           <p className="text-sm font-bold text-amber-900">{editBannerText()}</p>
@@ -2846,7 +2933,7 @@ export default function POSPage({
         }`}
       >
       {editLoading && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-white/70 backdrop-blur-sm">
+        <div className="absolute inset-0 z-[90] flex items-center justify-center bg-white/70 backdrop-blur-sm">
           <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-[#dcecff] border-t-[#1473e6]" />
         </div>
       )}
@@ -4138,7 +4225,7 @@ export default function POSPage({
 
       {showSaveConfirm && (
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
+          className="absolute inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
           role="presentation"
           onClick={() => !loading && setShowSaveConfirm(false)}
         >

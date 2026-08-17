@@ -294,6 +294,15 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
       }
       e.preventDefault();
       e.stopPropagation();
+      try {
+        const dest = new URL(href, window.location.href);
+        const path = dest.pathname + dest.search;
+        if (path && !path.startsWith("/login") && !path.startsWith("/app-start")) {
+          localStorage.setItem("windoor-last-path", path);
+        }
+      } catch {
+        /* ignore */
+      }
       window.location.assign(href);
     }
     document.addEventListener("click", onClick, true);
