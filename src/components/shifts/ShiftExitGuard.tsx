@@ -42,10 +42,12 @@ export function ShiftExitGuard() {
   const { isEmployee } = useAuth();
   const openShiftIdRef = useRef<string | null>(null);
   const armedRef = useRef(false);
+  const shouldArmRef = useRef(false);
 
   useEffect(() => {
     openShiftIdRef.current = openShift?.id || null;
-    armedRef.current = !!(isEmployee && openShift);
+    shouldArmRef.current = !!(isEmployee && openShift);
+    armedRef.current = shouldArmRef.current;
   }, [isEmployee, openShift]);
 
   // Cancel pending abandon when session is alive again (refresh / return)
@@ -71,11 +73,40 @@ export function ShiftExitGuard() {
       });
     }
 
+    let rearmTimer: number | undefined;
+
+    function onInAppClick(e: MouseEvent) {
+      if (e.button !== 0) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = (e.target as Element | null)?.closest?.("a[href]");
+      if (!a) return;
+      const href = a.getAttribute("href");
+      if (!href || href.startsWith("#") || href.startsWith("mailto:")) return;
+      if (a.getAttribute("target") === "_blank" || a.hasAttribute("download")) {
+        return;
+      }
+      try {
+        const dest = new URL(href, window.location.href);
+        if (dest.origin !== window.location.origin) return;
+      } catch {
+        return;
+      }
+      // Same-origin sidebar/header navigation is not "leaving the tab".
+      armedRef.current = false;
+      if (rearmTimer) window.clearTimeout(rearmTimer);
+      rearmTimer = window.setTimeout(() => {
+        armedRef.current = shouldArmRef.current;
+      }, 2500);
+    }
+
     window.addEventListener("beforeunload", onBeforeUnload);
     window.addEventListener("pagehide", onPageHide);
+    document.addEventListener("click", onInAppClick, true);
     return () => {
+      if (rearmTimer) window.clearTimeout(rearmTimer);
       window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener("pagehide", onPageHide);
+      document.removeEventListener("click", onInAppClick, true);
     };
   }, []);
 

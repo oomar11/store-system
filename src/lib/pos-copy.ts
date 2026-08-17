@@ -15,6 +15,12 @@ export function modeToPosUrl(mode: PosMode, base = "/pos"): string {
   return mode === "sale" ? base : `${base}?mode=${mode}`;
 }
 
+/** True when `pathname` is the desktop or embedded POS route (not `/possess` etc.). */
+export function isPosPathname(pathname: string, embedded = false): boolean {
+  const base = embedded ? "/m/pos" : "/pos";
+  return pathname === base || pathname.startsWith(`${base}/`);
+}
+
 /** Build URL that opens POS with a prefilled cart from an existing doc/invoice. */
 export function posCopyUrl(
   sourceId: string,
