@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Download, X } from "lucide-react";
 import {
   isBrowserOnline,
@@ -58,20 +58,25 @@ export function PWARegister() {
     null
   );
   const [installBusy, setInstallBusy] = useState(false);
+  // Only reload the page when the user explicitly taps "apply update".
+  const userAppliedUpdateRef = useRef(false);
 
   useEffect(() => {
     let registration: ServiceWorkerRegistration | null = null;
     let warmTimer: number | undefined;
-    let updateTimer: number | undefined;
 
     const onControllerChange = () => {
-      // Guard against reload loops when multiple SW updates race.
+      // A controller change fires for the initial claim and whenever a new SW
+      // takes over. Auto-reloading here refreshes the page at unpredictable
+      // moments — if it lands mid-navigation the new URL hasn't committed yet,
+      // so the user gets bounced back to the page they were leaving (e.g. POS).
+      // Only reload when the user explicitly applied an update from the banner.
+      if (!userAppliedUpdateRef.current) return;
       if (sessionStorage.getItem("windoor-sw-reloading") === "1") return;
       sessionStorage.setItem("windoor-sw-reloading", "1");
       window.setTimeout(() => {
         sessionStorage.removeItem("windoor-sw-reloading");
       }, 8000);
-      // New SW claimed the page — drop stale JS (old transfer RPC path).
       window.location.reload();
     };
     navigator.serviceWorker?.addEventListener(
@@ -82,32 +87,28 @@ export function PWARegister() {
     void registerServiceWorker().then((reg) => {
       if (!reg) return;
       registration = reg;
-      if (reg.waiting) {
-        reg.waiting.postMessage({ type: "SKIP_WAITING" });
-      }
+      // A worker is already waiting (installed while the app was closed):
+      // surface the update banner instead of auto-activating it.
       if (reg.waiting && navigator.serviceWorker.controller) {
         setWaitingWorker(reg.waiting);
         setUpdateReady(true);
-        // Auto-apply so phones don't stay on cached transfer bugs.
-        updateTimer = window.setTimeout(() => {
-          reg.waiting?.postMessage({ type: "SKIP_WAITING" });
-        }, 400);
       }
       reg.addEventListener("updatefound", () => {
         const installing = reg.installing;
         if (!installing) return;
         installing.addEventListener("statechange", () => {
-          if (installing.state === "installed") {
-            if (navigator.serviceWorker.controller) {
-              installing.postMessage({ type: "SKIP_WAITING" });
-              setWaitingWorker(reg.waiting);
-              setUpdateReady(true);
-            }
+          if (
+            installing.state === "installed" &&
+            navigator.serviceWorker.controller
+          ) {
+            // Update is ready — let the user apply it (no surprise refresh).
+            setWaitingWorker(reg.waiting);
+            setUpdateReady(true);
           }
         });
       });
 
-      // Force a check on finance/treasury sessions.
+      // Check for a new service worker in the background.
       void reg.update().catch(() => undefined);
 
       if (isBrowserOnline()) {
@@ -138,7 +139,6 @@ export function PWARegister() {
         onControllerChange
       );
       if (warmTimer) window.clearTimeout(warmTimer);
-      if (updateTimer) window.clearTimeout(updateTimer);
       void registration;
     };
   }, []);
@@ -171,6 +171,7 @@ export function PWARegister() {
   }
 
   function applyUpdate() {
+    userAppliedUpdateRef.current = true;
     waitingWorker?.postMessage({ type: "SKIP_WAITING" });
     window.location.reload();
   }
