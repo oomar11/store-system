@@ -246,6 +246,13 @@ export default function POSPage({
   embedded?: boolean;
 } = {}) {
   const router = useRouter();
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const [mode, setMode] = useState<PosMode>("sale");
   const modeRef = useRef<PosMode>(mode);
   modeRef.current = mode;
@@ -342,6 +349,14 @@ export default function POSPage({
   const isEditing = !!(editingInvoiceId || editingDocId);
   const posBase = embedded ? "/m/pos" : "/pos";
   const posUrl = (m: PosMode = mode) => modeToUrl(m, posBase);
+  /** Never navigate back to POS after the user already left the page. */
+  const stayOnPosReplace = (href: string) => {
+    if (!mountedRef.current) return;
+    if (typeof window === "undefined") return;
+    const path = window.location.pathname;
+    if (path !== posBase && !path.startsWith(`${posBase}/`)) return;
+    router.replace(href);
+  };
   const selectedTierName =
     selectedTierId == null
       ? null
@@ -481,6 +496,7 @@ export default function POSPage({
   }, [showTierMenu]);
 
   useEffect(() => {
+    let cancelled = false;
     async function boot() {
       await Promise.all([
         fetchProducts(),
@@ -491,6 +507,7 @@ export default function POSPage({
         fetchTierPrices(),
         fetchPriceTiers(),
       ]);
+      if (cancelled || !mountedRef.current) return;
       searchRef.current?.focus();
 
       const params = new URLSearchParams(window.location.search);
@@ -508,9 +525,13 @@ export default function POSPage({
         else if (nextMode === "purchase") await loadPurchaseForEdit(editId);
         else await loadInvoiceForEdit(editId);
       }
+      if (cancelled || !mountedRef.current) return;
       setBootReady(true);
     }
     void boot();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -974,7 +995,7 @@ export default function POSPage({
   async function loadInvoiceForEdit(invoiceId: string) {
     if (!isBrowserOnline()) {
       toastError("تعديل الفاتورة يحتاج إنترنت — أضف فاتورة جديدة أوفلاين من نقطة البيع");
-      router.replace(posUrl("sale"));
+      stayOnPosReplace(posUrl("sale"));
       return;
     }
     setEditLoading(true);
@@ -991,7 +1012,7 @@ export default function POSPage({
 
       if (error || !inv) {
         toastError("تعذر فتح الفاتورة للتعديل");
-        router.replace(posUrl("sale"));
+        stayOnPosReplace(posUrl("sale"));
         return;
       }
 
@@ -1088,7 +1109,7 @@ export default function POSPage({
 
       if (error || !inv) {
         toastError("تعذر فتح فاتورة المشتريات للتعديل");
-        router.replace(posUrl("purchase"));
+        stayOnPosReplace(posUrl("purchase"));
         return;
       }
 
@@ -1146,13 +1167,13 @@ export default function POSPage({
 
       if (error || !doc) {
         toastError("تعذر فتح عرض السعر للتعديل");
-        router.replace(posUrl("quote"));
+        stayOnPosReplace(posUrl("quote"));
         return;
       }
 
       if (doc.stage === "converted") {
         toastError("عرض السعر محوّل لفاتورة ولا يمكن تعديله من هنا.");
-        router.replace(
+        stayOnPosReplace(
           embedded ? "/m/invoices?tab=quote" : "/sales?tab=quotes"
         );
         return;
@@ -1209,13 +1230,13 @@ export default function POSPage({
 
       if (error || !doc) {
         toastError("تعذر فتح طلب المشتريات للتعديل");
-        router.replace(posUrl("purchase_order"));
+        stayOnPosReplace(posUrl("purchase_order"));
         return;
       }
 
       if (doc.stage === "converted") {
         toastError("طلب المشتريات محوّل لفاتورة ولا يمكن تعديله من هنا.");
-        router.replace(
+        stayOnPosReplace(
           embedded ? "/m/invoices?tab=purchase_order" : "/purchases?tab=orders"
         );
         return;
@@ -1260,7 +1281,7 @@ export default function POSPage({
       !canAccess(subject, "purchases")
     ) {
       toastError("ليس لديك صلاحية المشتريات");
-      router.replace(posUrl("sale"));
+      stayOnPosReplace(posUrl("sale"));
       return;
     }
 
@@ -1371,7 +1392,7 @@ export default function POSPage({
 
       if (!sourceMode || lines.length === 0) {
         toastError("تعذر نسخ المستند — لا توجد بنود");
-        router.replace(posUrl(asMode));
+        stayOnPosReplace(posUrl(asMode));
         return;
       }
 
@@ -1421,7 +1442,7 @@ export default function POSPage({
 
       if (cartLines.length === 0) {
         toastError("تعذر نسخ المستند — أصناف غير متاحة");
-        router.replace(posUrl(asMode));
+        stayOnPosReplace(posUrl(asMode));
         return;
       }
 
@@ -1480,11 +1501,11 @@ export default function POSPage({
       setNotes(notesCombined);
 
       toastSuccess(`تم تجهيز السلة (${cartLines.length} صنف) — راجع واحفظ`);
-      router.replace(posUrl(asMode));
+      stayOnPosReplace(posUrl(asMode));
       searchRef.current?.focus();
     } catch {
       toastError("تعذر نسخ المستند");
-      router.replace(posUrl(asMode));
+      stayOnPosReplace(posUrl(asMode));
     } finally {
       setEditLoading(false);
     }
@@ -1528,7 +1549,7 @@ export default function POSPage({
     setEditingDocId(null);
     setLastInvoice("");
     setMode(nextMode);
-    router.replace(posUrl(nextMode));
+    stayOnPosReplace(posUrl(nextMode));
     searchRef.current?.focus();
   }
 
@@ -2503,7 +2524,7 @@ export default function POSPage({
     setEditingDocId(null);
     setLastInvoice("");
     if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("edit")) {
-      router.replace(posUrl(mode));
+      stayOnPosReplace(posUrl(mode));
     }
     searchRef.current?.focus();
   }

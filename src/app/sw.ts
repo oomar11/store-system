@@ -53,12 +53,8 @@ const serwist = new Serwist({
           return request.mode === "navigate" || request.destination === "document";
         },
       },
-      {
-        url: "/app-start.html",
-        matcher({ request }) {
-          return request.mode === "navigate";
-        },
-      },
+      // Do NOT fall back navigations to /app-start.html — that page redirects
+      // to windoor-last-path (often /pos) and traps users when leaving POS.
     ],
   },
 });

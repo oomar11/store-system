@@ -81,7 +81,7 @@
     </div>
     <script>
       (function () {
-        var PATHS = ["/pos", "/m", "/dashboard", "/programs", "/login", "/manufacturing"];
+        var PATHS = ["/dashboard", "/m", "/programs", "/pos", "/login", "/manufacturing"];
         var msg = document.getElementById("msg");
         var err = document.getElementById("err");
         var spin = document.getElementById("spin");
@@ -134,8 +134,10 @@
               return;
             }
             // Soft try — never bounce to `/` (causes redirect loops with SW)
+            // Prefer dashboard/login over /pos so a failed leave-POS nav
+            // does not trap the user back on the counter screen.
             location.replace(
-              navigator.onLine === false ? "/pos" : "/login?next=/programs"
+              navigator.onLine === false ? "/dashboard" : "/login?next=/programs"
             );
           } catch (e) {
             showErr();
