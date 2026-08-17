@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { usePathname } from "next/navigation";
 import { createClient } from "@/lib/supabase";
 import {
   countPendingOutbox,
@@ -39,6 +40,7 @@ const PROBE_INTERVAL_MS = 30_000;
 const PROBE_TIMEOUT_MS = 800;
 
 export function OfflineProvider({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
   const supabase = useMemo(() => createClient(), []);
   const [online, setOnline] = useState(() =>
     typeof navigator !== "undefined" ? navigator.onLine : true
@@ -248,30 +250,35 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
     };
   }, [supabase, refreshQueue, checkConnectivity, runSync]);
 
-  // Remember last route for PWA cold start
+  // Remember last route for PWA cold start — update immediately on soft nav
+  // so a failed leave-POS recovery does not bounce back to /pos.
   useEffect(() => {
-    const save = () => {
+    const save = (path?: string) => {
       try {
-        const path = window.location.pathname + window.location.search;
+        const next =
+          path ||
+          (typeof window !== "undefined"
+            ? window.location.pathname + window.location.search
+            : "");
         if (
-          path &&
-          !path.startsWith("/login") &&
-          !path.startsWith("/app-start")
+          next &&
+          !next.startsWith("/login") &&
+          !next.startsWith("/app-start")
         ) {
-          localStorage.setItem("windoor-last-path", path);
+          localStorage.setItem("windoor-last-path", next);
         }
       } catch {
         /* ignore */
       }
     };
-    save();
-    window.addEventListener("popstate", save);
-    const timer = window.setInterval(save, 4000);
+    const onPop = () => save();
+    if (pathname) save(pathname);
+    else save();
+    window.addEventListener("popstate", onPop);
     return () => {
-      window.removeEventListener("popstate", save);
-      window.clearInterval(timer);
+      window.removeEventListener("popstate", onPop);
     };
-  }, []);
+  }, [pathname]);
 
   // Hard-navigate only while offline — soft RSC nav hangs without cached flights.
   // Online: allow normal Next.js client navigation.
