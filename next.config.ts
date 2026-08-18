@@ -34,6 +34,24 @@ const nextConfig: NextConfig = {
         ],
       },
       {
+        source: "/app-update.html",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "no-store, must-revalidate",
+          },
+        ],
+      },
+      {
+        source: "/m",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "no-store, must-revalidate",
+          },
+        ],
+      },
+      {
         source: "/m/finance",
         headers: [
           {
