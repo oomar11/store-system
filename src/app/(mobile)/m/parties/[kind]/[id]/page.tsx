@@ -392,6 +392,15 @@ export default function MobilePartyDetailPage() {
                   {kind === "customer" ? "تحصيل" : "سداد"}
                 </button>
               ) : null}
+              <button
+                type="button"
+                className="mobile-btn mobile-btn--ghost mt-2"
+                onClick={() =>
+                  router.push(`/m/parties/${kind}/${party.id}/statement`)
+                }
+              >
+                كشف حساب مفصّل
+              </button>
             </div>
 
             <MobileSection title="الحركة">
