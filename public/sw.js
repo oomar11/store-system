@@ -1,5 +1,5 @@
 /* Windoor PWA — cache-first shells so offline never hangs on network */
-const CACHE_VERSION = "windoor-v25";
+const CACHE_VERSION = "windoor-v26";
 const SHELL_CACHE = `${CACHE_VERSION}-shell`;
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
@@ -122,6 +122,15 @@ async function recoveryShell() {
   return bootstrapResponse();
 }
 
+function isLiveAccountPath(pathname) {
+  return (
+    pathname === "/m/finance" ||
+    pathname.startsWith("/m/finance/") ||
+    pathname === "/m/parties" ||
+    pathname.startsWith("/m/parties/")
+  );
+}
+
 /**
  * Cache-first navigations: never block on a dead network.
  * If a shell is cached, return it immediately and refresh in background.
@@ -151,6 +160,31 @@ async function navigationHandler(request) {
 
   const browserOffline = self.navigator.onLine === false;
   const netReq = navigationNetworkRequest(request);
+
+  // Pay/collect screens: network-first so phones don't keep the old
+  // "invoices must cover this amount" bundle while desktop is already fresh.
+  if (isLiveAccountPath(url.pathname) && !browserOffline) {
+    try {
+      const response = await fetchWithTimeout(netReq, 4000);
+      if (
+        response &&
+        response.ok &&
+        response.type !== "opaqueredirect" &&
+        !(response.status >= 300 && response.status < 400)
+      ) {
+        const finalPath = new URL(response.url).pathname;
+        await putShell(url.pathname, response.clone());
+        if (finalPath !== url.pathname) {
+          await putShell(finalPath, response.clone());
+        }
+        return response;
+      }
+    } catch {
+      /* use cache below */
+    }
+    if (cached) return cached;
+    return recoveryShell();
+  }
 
   if (cached) {
     if (!browserOffline) {
