@@ -2,7 +2,7 @@
 /// <reference lib="webworker" />
 import { defaultCache } from "@serwist/turbopack/worker";
 import type { PrecacheEntry, SerwistGlobalConfig } from "serwist";
-import { NetworkOnly, Serwist } from "serwist";
+import { NetworkFirst, NetworkOnly, Serwist } from "serwist";
 
 declare global {
   interface WorkerGlobalScope extends SerwistGlobalConfig {
@@ -41,6 +41,26 @@ const serwist = new Serwist({
         sameOrigin && url.pathname.startsWith("/api/"),
       handler: new NetworkOnly({
         networkTimeoutSeconds: 3,
+      }),
+    },
+    // Supplier/customer pay on the phone must not keep a stale leftover-check
+    // bundle. Desktop skips this because it is not a cache-first PWA shell.
+    {
+      matcher: ({ request, url, sameOrigin }) =>
+        sameOrigin &&
+        request.mode === "navigate" &&
+        (url.pathname === "/m/finance" ||
+          url.pathname.startsWith("/m/finance/") ||
+          url.pathname === "/m/parties" ||
+          url.pathname.startsWith("/m/parties/")),
+      handler: new NetworkFirst({
+        cacheName: "windoor-live-account-v26",
+        networkTimeoutSeconds: 4,
+        fetchOptions: {
+          redirect: "follow",
+          credentials: "same-origin",
+          cache: "no-store",
+        },
       }),
     },
     ...defaultCache,

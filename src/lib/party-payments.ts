@@ -5,8 +5,17 @@ import {
 } from "@/lib/party-balance";
 import { deletePartySettlement } from "@/lib/party-link";
 import { applySafeMovement } from "@/lib/safe-transactions";
+import {
+  money,
+  previewFifoAllocation,
+  previewPartyPaymentAllocation,
+  type AllocationPreview,
+  type OpenInvoiceForPayment,
+} from "@/lib/party-payment-allocation";
 
 export type PartyPaymentKind = "customer" | "supplier";
+export type { AllocationPreview, OpenInvoiceForPayment };
+export { money, previewFifoAllocation, previewPartyPaymentAllocation };
 
 const RLS_DENIED_AR = "تحصيل/سداد الأطراف غير مسموح لصلاحياتك";
 
@@ -18,22 +27,6 @@ function mapDbError(message: string | undefined, fallback: string): string {
   }
   return msg;
 }
-
-export type OpenInvoiceForPayment = {
-  id: string;
-  invoice_number: string;
-  total: number;
-  paid_amount: number;
-  remaining: number;
-  created_at: string;
-};
-
-export type AllocationPreview = {
-  invoiceId: string;
-  invoiceNumber: string;
-  amount: number;
-  remainingAfter: number;
-};
 
 export type PartyPaymentAllocationDetail = {
   id: string;
@@ -70,10 +63,6 @@ export function partyPaymentDocNumber(
   const prefix = kind === "customer" ? "تحص" : "سداد";
   const shortId = paymentId.replace(/-/g, "").slice(0, 8).toUpperCase();
   return `${prefix}-${shortId}`;
-}
-
-function money(n: number): number {
-  return Math.round((Number(n) || 0) * 100) / 100;
 }
 
 /** Open sale/purchase invoices for a party, oldest first (FIFO). */
@@ -125,72 +114,6 @@ export async function fetchOpenInvoicesForParty(
     .filter((row) => row.remaining > 0.001);
 }
 
-/** Preview FIFO allocation without writing. */
-export function previewFifoAllocation(
-  invoices: OpenInvoiceForPayment[],
-  amount: number
-): { allocations: AllocationPreview[]; totalOpen: number; leftover: number } {
-  const pay = money(amount);
-  const totalOpen = money(
-    invoices.reduce((sum, inv) => sum + inv.remaining, 0)
-  );
-  let left = pay;
-  const allocations: AllocationPreview[] = [];
-
-  for (const inv of invoices) {
-    if (left <= 0.001) break;
-    const slice = money(Math.min(left, inv.remaining));
-    if (slice <= 0) continue;
-    allocations.push({
-      invoiceId: inv.id,
-      invoiceNumber: inv.invoice_number,
-      amount: slice,
-      remainingAfter: money(inv.remaining - slice),
-    });
-    left = money(left - slice);
-  }
-
-  return { allocations, totalOpen, leftover: left };
-}
-
-/**
- * Allocate a party payment without closing invoices before covering
- * non-invoice debt (opening balance, linked debts, etc.).
- *
- * Order: (1) cover max(0, partyBalance - openInvoices), (2) FIFO on invoices,
- * (3) anything left is account credit/advance.
- */
-export function previewPartyPaymentAllocation(
-  invoices: OpenInvoiceForPayment[],
-  amount: number,
-  partyBalance: number
-): {
-  allocations: AllocationPreview[];
-  totalOpen: number;
-  leftover: number;
-  nonInvoiceCover: number;
-  towardInvoices: number;
-} {
-  const pay = money(amount);
-  const totalOpen = money(
-    invoices.reduce((sum, inv) => sum + inv.remaining, 0)
-  );
-  const bal = money(partyBalance);
-  const nonInvoiceDebt = money(Math.max(0, bal - totalOpen));
-  const nonInvoiceCover = money(Math.min(pay, nonInvoiceDebt));
-  const towardInvoices = money(Math.max(0, pay - nonInvoiceCover));
-  const fifo = previewFifoAllocation(invoices, towardInvoices);
-  const leftover = money(nonInvoiceCover + fifo.leftover);
-
-  return {
-    allocations: fifo.allocations,
-    totalOpen,
-    leftover,
-    nonInvoiceCover,
-    towardInvoices: money(towardInvoices - fifo.leftover),
-  };
-}
-
 async function fetchPartyBalance(
   supabase: SupabaseClient,
   kind: PartyPaymentKind,
@@ -223,6 +146,9 @@ export type ApplyPartyPaymentParams = {
  * movement, and balance decrease.
  * Any unallocated amount (no invoices / opening debt / amount above open
  * total) stays on the party account (balance decreases by the full amount).
+ *
+ * Do not reject leftover or missing invoices — that used to break supplier
+ * pay on the phone PWA while desktop (fresh JS) already allowed advances.
  */
 export async function applyPartyPayment(
   supabase: SupabaseClient,
@@ -236,6 +162,7 @@ export async function applyPartyPayment(
     fetchOpenInvoicesForParty(supabase, params.kind, params.partyId),
     fetchPartyBalance(supabase, params.kind, params.partyId),
   ]);
+  // leftover is account credit / supplier advance — never throw for it.
   const { allocations } = previewPartyPaymentAllocation(
     open,
     amount,

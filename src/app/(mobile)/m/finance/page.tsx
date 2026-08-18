@@ -33,6 +33,11 @@ import {
   getSnapshot,
   listActiveEntities,
 } from "@/lib/offline";
+import {
+  fetchOpenInvoicesForParty,
+  previewPartyPaymentAllocation,
+  type OpenInvoiceForPayment,
+} from "@/lib/party-payments";
 import { normalizeActiveSafes, safesOrderQuery } from "@/lib/safes-order";
 import { formatCurrency, formatDateShort } from "@/lib/utils";
 import { MobileHeader } from "@/components/mobile/MobileHeader";
@@ -152,6 +157,7 @@ export default function MobileFinancePage() {
   const [safeId, setSafeId] = useState("");
   const [expenseAccountId, setExpenseAccountId] = useState("");
   const [partyId, setPartyId] = useState("");
+  const [openInvoices, setOpenInvoices] = useState<OpenInvoiceForPayment[]>([]);
 
   // Transfer-only state — never mixed with offline/display safes.
   const [transferSafes, setTransferSafes] = useState<TransferSafe[]>([]);
@@ -431,11 +437,45 @@ export default function MobileFinancePage() {
     };
   }, [authLoading, load]);
 
+  useEffect(() => {
+    if (sheet !== "collect" && sheet !== "pay_supplier") return;
+    if (!partyId) return;
+    let cancelled = false;
+    const kind = sheet === "collect" ? "customer" : "supplier";
+    void fetchOpenInvoicesForParty(supabase, kind, partyId)
+      .then((open) => {
+        if (!cancelled) setOpenInvoices(open);
+      })
+      .catch(() => {
+        if (!cancelled) setOpenInvoices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [partyId, sheet, supabase]);
+
+  const payPreview = useMemo(() => {
+    if (sheet !== "collect" && sheet !== "pay_supplier") return null;
+    const value = Number(amount) || 0;
+    if (!partyId || value <= 0) return null;
+    const party =
+      sheet === "collect"
+        ? customers.find((c) => c.id === partyId)
+        : suppliers.find((s) => s.id === partyId);
+    if (!party) return null;
+    return previewPartyPaymentAllocation(
+      openInvoices,
+      value,
+      Number(party.balance) || 0
+    );
+  }, [amount, customers, openInvoices, partyId, sheet, suppliers]);
+
   function resetSheetFields() {
     setError("");
     setAmount("");
     setDescription("");
     setPartyId("");
+    setOpenInvoices([]);
     setTransferSafes([]);
     setFromSafeId("");
     setToSafeId("");
@@ -830,7 +870,10 @@ export default function MobileFinancePage() {
                   <label>{sheet === "collect" ? "العميل" : "المورد"}</label>
                   <select
                     value={partyId}
-                    onChange={(e) => setPartyId(e.target.value)}
+                    onChange={(e) => {
+                      setPartyId(e.target.value);
+                      setOpenInvoices([]);
+                    }}
                   >
                     <option value="">اختر...</option>
                     {(sheet === "collect" ? customers : suppliers).map((p) => (
@@ -842,8 +885,8 @@ export default function MobileFinancePage() {
                 </div>
                 <p className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
                   {sheet === "collect"
-                    ? "تقدر تحصّل في أي وقت — لو مفيش فواتير مفتوحة المبلغ يتسجّل على حساب العميل."
-                    : "تقدر تسدّد في أي وقت — لو مفيش فواتير مفتوحة المبلغ يتسجّل مقدم للمورد."}
+                    ? "تقدر تحصّل أي مبلغ — مش لازم الفواتير تغطي الفلوس. الزيادة تتتسجل رصيد على حساب العميل."
+                    : "تقدر تسدّد أي مبلغ — مش لازم الفواتير تغطي الفلوس. الزيادة تتتسجل مقدم على حساب المورد."}
                 </p>
               </>
             )}
@@ -941,6 +984,26 @@ export default function MobileFinancePage() {
                 placeholder="0.00"
               />
             </div>
+
+            {(sheet === "collect" || sheet === "pay_supplier") &&
+            payPreview &&
+            Number(amount) > 0 ? (
+              <div className="mb-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs font-semibold text-[var(--muted)]">
+                {payPreview.allocations.length > 0 ? (
+                  <p>
+                    على الفواتير: {formatCurrency(payPreview.towardInvoices)} (
+                    {payPreview.allocations.length} فاتورة)
+                  </p>
+                ) : null}
+                {payPreview.leftover > 0.001 ? (
+                  <p className="text-emerald-800">
+                    {sheet === "collect"
+                      ? `رصيد على الحساب ${formatCurrency(payPreview.leftover)} — من غير ما الفواتير تغطي المبلغ كامل.`
+                      : `مقدم للمورد ${formatCurrency(payPreview.leftover)} — من غير ما الفواتير تغطي المبلغ كامل.`}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
 
             <div className="mobile-field">
               <label>ملاحظة</label>

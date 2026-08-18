@@ -19,7 +19,8 @@ export const { dynamic, dynamicParams, revalidate, generateStaticParams, GET } =
       { url: "/customers", revision },
       { url: "/m", revision },
       { url: "/m/pos", revision },
-      { url: "/m/finance", revision },
+      // Do not precache /m/finance or /m/parties — phones were keeping a
+      // stale bundle that still required invoices to cover supplier pay.
       { url: "/offline-queue", revision },
     ],
     swSrc: "src/app/sw.ts",
