@@ -1517,6 +1517,108 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator,
   overflow: hidden;
 }
 
+.stmt-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.stmt-table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stmt-table th,
+.stmt-table td {
+  border: 1px solid var(--border);
+  padding: 8px 7px;
+  text-align: right;
+  vertical-align: top;
+}
+
+.stmt-table thead th {
+  background: color-mix(in srgb, var(--primary) 88%, #0b5fc4);
+  color: #fff;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.stmt-table__opening td {
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface)) !important;
+  font-weight: 800;
+}
+
+.stmt-table__nested td {
+  background: color-mix(in srgb, var(--primary) 6%, var(--surface)) !important;
+  padding: 8px;
+}
+
+.stmt-table--compact {
+  min-width: 0;
+  font-size: 11px;
+  background: var(--surface);
+}
+
+.stmt-table--compact thead th {
+  background: color-mix(in srgb, var(--primary) 18%, var(--surface));
+  color: var(--foreground);
+}
+
+.stmt-table__debit {
+  color: var(--danger);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.stmt-table__credit {
+  color: var(--success);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.stmt-table__balance {
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.stmt-table__foot td {
+  background: color-mix(in srgb, var(--primary) 88%, #0b5fc4) !important;
+  color: #fff;
+  font-weight: 900;
+}
+
+.stmt-summary {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stmt-summary th,
+.stmt-summary td {
+  border: 1px solid var(--border);
+  padding: 9px 8px;
+  text-align: right;
+}
+
+.stmt-summary th {
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-weight: 800;
+  white-space: nowrap;
+  width: 28%;
+}
+
+.stmt-summary td {
+  font-weight: 800;
+  background: var(--surface);
+}
+
 .mobile-list-row {
   display: flex;
   align-items: center;

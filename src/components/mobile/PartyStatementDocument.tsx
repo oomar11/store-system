@@ -1,18 +1,123 @@
 "use client";
 
-import { Fragment } from "react";
+import { Fragment, type CSSProperties } from "react";
 import { formatCurrency, formatDateShort } from "@/lib/utils";
 import { resolveStoreName } from "@/components/print/report-columns";
 import { PrintBrandMark } from "@/components/print/PrintBrandMark";
-import type { PartyStatement } from "@/lib/party-statement";
+import type { PartyStatement, StatementLine } from "@/lib/party-statement";
 import type { Settings } from "@/types";
 
 const FONT =
   'var(--font-cairo), Cairo, "Segoe UI", Tahoma, sans-serif';
 
+const INK = "#142033";
+const MUTED = "#526176";
+const LINE = "#c4cedb";
+const HEAD = "#0b5fc4";
+const DEBIT = "#b42318";
+const CREDIT = "#027a48";
+const ZEBRA = "#f4f8fc";
+const OPENING_BG = "#eaf4ff";
+const NESTED_BG = "#f8fbff";
+
 function moneyCell(value: number) {
   if (Math.abs(value) < 0.0005) return "—";
   return formatCurrency(value);
+}
+
+function thStyle(extra?: CSSProperties): CSSProperties {
+  return {
+    textAlign: "right",
+    padding: "8px 7px",
+    fontWeight: 800,
+    color: "#ffffff",
+    background: HEAD,
+    border: `1px solid ${HEAD}`,
+    whiteSpace: "nowrap",
+    ...extra,
+  };
+}
+
+function tdStyle(extra?: CSSProperties): CSSProperties {
+  return {
+    textAlign: "right",
+    padding: "7px 7px",
+    border: `1px solid ${LINE}`,
+    verticalAlign: "top",
+    ...extra,
+  };
+}
+
+function LinesTable({ lines }: { lines: StatementLine[] }) {
+  return (
+    <table
+      style={{
+        width: "100%",
+        borderCollapse: "collapse",
+        fontSize: 10,
+        background: "#ffffff",
+      }}
+    >
+      <thead>
+        <tr>
+          {["الصنف", "المواصفات", "الكمية", "سعر الوحدة", "الإجمالي"].map(
+            (label) => (
+              <th
+                key={label}
+                style={{
+                  textAlign: "right",
+                  padding: "5px 6px",
+                  background: "#dbeafe",
+                  color: INK,
+                  border: `1px solid ${LINE}`,
+                  fontWeight: 800,
+                }}
+              >
+                {label}
+              </th>
+            )
+          )}
+        </tr>
+      </thead>
+      <tbody>
+        {lines.map((line, idx) => (
+          <tr key={`${line.name}-${idx}`}>
+            <td style={tdStyle({ fontWeight: 700, background: NESTED_BG })}>
+              {line.name}
+            </td>
+            <td style={tdStyle({ color: MUTED, background: NESTED_BG })}>
+              {line.detail || "—"}
+            </td>
+            <td
+              style={tdStyle({
+                whiteSpace: "nowrap",
+                background: NESTED_BG,
+              })}
+            >
+              {line.qty || "—"}
+            </td>
+            <td
+              style={tdStyle({
+                whiteSpace: "nowrap",
+                background: NESTED_BG,
+              })}
+            >
+              {line.unitPrice != null ? formatCurrency(line.unitPrice) : "—"}
+            </td>
+            <td
+              style={tdStyle({
+                whiteSpace: "nowrap",
+                fontWeight: 800,
+                background: NESTED_BG,
+              })}
+            >
+              {line.total != null ? formatCurrency(line.total) : "—"}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
 }
 
 export function PartyStatementDocument({
@@ -33,90 +138,173 @@ export function PartyStatementDocument({
       : statement.dateTo
         ? `حتى ${formatDateShort(statement.dateTo)}`
         : "كل الفترة";
+  const debitLabel =
+    statement.kind === "customer" ? "مدين (عليه)" : "مدين (مدفوع)";
+  const creditLabel =
+    statement.kind === "customer" ? "دائن (له)" : "دائن (علينا)";
+  const movementCount = Math.max(0, statement.rows.length - 1);
 
   return (
     <div
       dir="rtl"
       style={{
         width: 794,
-        padding: 28,
+        padding: 26,
         background: "#ffffff",
-        color: "#142033",
+        color: INK,
         fontFamily: FONT,
         boxSizing: "border-box",
         textAlign: "right",
         direction: "rtl",
       }}
     >
-      <div style={{ textAlign: "center", marginBottom: 16, borderBottom: "2px solid #d7e0ea", paddingBottom: 12 }}>
-        <PrintBrandMark logoUrl={settings?.logo_url} />
-        <div style={{ fontWeight: 900, fontSize: 20, marginTop: 4 }}>{storeName}</div>
-        {(settings?.phone || settings?.address) && (
-          <div style={{ fontSize: 11, color: "#526176", fontWeight: 600, marginTop: 4 }}>
-            {[settings?.address, settings?.phone].filter(Boolean).join(" · ")}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 16,
+          borderBottom: `3px solid ${HEAD}`,
+          paddingBottom: 12,
+          marginBottom: 14,
+        }}
+      >
+        <div>
+          <div style={{ fontWeight: 900, fontSize: 22, lineHeight: 1.2 }}>
+            {storeName}
           </div>
-        )}
-        <div style={{ fontWeight: 800, fontSize: 15, marginTop: 10 }}>{statement.title}</div>
-        <div style={{ fontSize: 11, color: "#526176", marginTop: 4 }}>الفترة: {period}</div>
-        <div style={{ fontSize: 10, color: "#7a8699", marginTop: 2 }}>
-          تاريخ الإصدار: {formatDateShort(issuedAt)}
+          {(settings?.phone || settings?.address) && (
+            <div
+              style={{
+                fontSize: 11,
+                color: MUTED,
+                fontWeight: 600,
+                marginTop: 4,
+              }}
+            >
+              {[settings?.address, settings?.phone].filter(Boolean).join(" · ")}
+            </div>
+          )}
         </div>
+        <PrintBrandMark
+          className=""
+          sizeClassName="h-14 w-14"
+          logoUrl={settings?.logo_url}
+        />
       </div>
 
       <div
         style={{
-          border: "1px solid #d7e0ea",
-          borderRadius: 10,
-          padding: 12,
-          marginBottom: 12,
-          fontSize: 12,
-          lineHeight: 1.7,
+          fontWeight: 900,
+          fontSize: 16,
+          marginBottom: 10,
+          color: HEAD,
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
-          <span style={{ color: "#66758a" }}>
-            {statement.kind === "customer" ? "العميل" : "المورد"}
-          </span>
-          <strong>{statement.party.name}</strong>
-        </div>
-        {statement.party.phone ? (
-          <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <span style={{ color: "#66758a" }}>الهاتف</span>
-            <span dir="ltr">{statement.party.phone}</span>
-          </div>
-        ) : null}
-        {statement.linkedParty ? (
-          <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <span style={{ color: "#66758a" }}>حساب مربوط</span>
-            <strong>{statement.linkedParty.name}</strong>
-          </div>
-        ) : null}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            borderTop: "1px solid #eef1f6",
-            marginTop: 6,
-            paddingTop: 6,
-            fontWeight: 800,
-          }}
-        >
-          <span>الرصيد الختامي</span>
-          <span>{formatCurrency(statement.closingBalance)}</span>
-        </div>
+        {statement.title}
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, fontSize: 11, flexWrap: "wrap" }}>
-        <span style={{ border: "1px solid #d7e0ea", borderRadius: 8, padding: "4px 8px" }}>
-          مدين الفترة: <strong>{formatCurrency(statement.periodDebit)}</strong>
-        </span>
-        <span style={{ border: "1px solid #d7e0ea", borderRadius: 8, padding: "4px 8px" }}>
-          دائن الفترة: <strong>{formatCurrency(statement.periodCredit)}</strong>
-        </span>
-        <span style={{ border: "1px solid #d7e0ea", borderRadius: 8, padding: "4px 8px" }}>
-          عدد الحركات: <strong>{Math.max(0, statement.rows.length - 1)}</strong>
-        </span>
-      </div>
+      <table
+        style={{
+          width: "100%",
+          borderCollapse: "collapse",
+          fontSize: 11,
+          marginBottom: 12,
+        }}
+      >
+        <tbody>
+          <tr>
+            <th style={tdStyle({ background: ZEBRA, fontWeight: 800, width: "18%" })}>
+              {statement.kind === "customer" ? "العميل" : "المورد"}
+            </th>
+            <td style={tdStyle({ fontWeight: 800 })}>{statement.party.name}</td>
+            <th style={tdStyle({ background: ZEBRA, fontWeight: 800, width: "14%" })}>
+              الهاتف
+            </th>
+            <td style={tdStyle({ direction: "ltr", unicodeBidi: "plaintext" })}>
+              {statement.party.phone || "—"}
+            </td>
+          </tr>
+          <tr>
+            <th style={tdStyle({ background: ZEBRA, fontWeight: 800 })}>الفترة</th>
+            <td style={tdStyle()}>{period}</td>
+            <th style={tdStyle({ background: ZEBRA, fontWeight: 800 })}>
+              تاريخ الإصدار
+            </th>
+            <td style={tdStyle()}>{formatDateShort(issuedAt)}</td>
+          </tr>
+          {statement.party.address || statement.linkedParty ? (
+            <tr>
+              <th style={tdStyle({ background: ZEBRA, fontWeight: 800 })}>
+                العنوان
+              </th>
+              <td style={tdStyle()}>{statement.party.address || "—"}</td>
+              <th style={tdStyle({ background: ZEBRA, fontWeight: 800 })}>
+                حساب مربوط
+              </th>
+              <td style={tdStyle({ fontWeight: 700 })}>
+                {statement.linkedParty?.name || "—"}
+              </td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+
+      <table
+        style={{
+          width: "100%",
+          borderCollapse: "collapse",
+          fontSize: 11,
+          marginBottom: 14,
+        }}
+      >
+        <thead>
+          <tr>
+            <th style={thStyle()}>رصيد سابق</th>
+            <th style={thStyle()}>{debitLabel}</th>
+            <th style={thStyle()}>{creditLabel}</th>
+            <th style={thStyle()}>الرصيد الختامي</th>
+            <th style={thStyle()}>عدد الحركات</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style={tdStyle({ fontWeight: 800, fontSize: 13 })}>
+              {formatCurrency(statement.openingBalance)}
+            </td>
+            <td
+              style={tdStyle({
+                fontWeight: 800,
+                fontSize: 13,
+                color: DEBIT,
+              })}
+            >
+              {formatCurrency(statement.periodDebit)}
+            </td>
+            <td
+              style={tdStyle({
+                fontWeight: 800,
+                fontSize: 13,
+                color: CREDIT,
+              })}
+            >
+              {formatCurrency(statement.periodCredit)}
+            </td>
+            <td
+              style={tdStyle({
+                fontWeight: 900,
+                fontSize: 13,
+                background: OPENING_BG,
+              })}
+            >
+              {formatCurrency(statement.closingBalance)}
+            </td>
+            <td style={tdStyle({ fontWeight: 800, fontSize: 13 })}>
+              {movementCount}
+            </td>
+          </tr>
+        </tbody>
+      </table>
 
       <table
         style={{
@@ -126,71 +314,143 @@ export function PartyStatementDocument({
         }}
       >
         <thead>
-          <tr style={{ borderBottom: "2px solid #142033" }}>
-            <th style={{ textAlign: "right", padding: "6px 4px" }}>#</th>
-            <th style={{ textAlign: "right", padding: "6px 4px" }}>التاريخ</th>
-            <th style={{ textAlign: "right", padding: "6px 4px" }}>البيان</th>
-            <th style={{ textAlign: "right", padding: "6px 4px" }}>مدين</th>
-            <th style={{ textAlign: "right", padding: "6px 4px" }}>دائن</th>
-            <th style={{ textAlign: "right", padding: "6px 4px" }}>رصيد</th>
+          <tr>
+            <th style={thStyle({ width: "6%" })}>#</th>
+            <th style={thStyle({ width: "13%" })}>التاريخ</th>
+            <th style={thStyle({ width: "16%" })}>النوع</th>
+            <th style={thStyle()}>المستند</th>
+            <th style={thStyle({ width: "15%" })}>مدين</th>
+            <th style={thStyle({ width: "15%" })}>دائن</th>
+            <th style={thStyle({ width: "16%" })}>رصيد</th>
           </tr>
         </thead>
         <tbody>
-          {statement.rows.map((row, index) => (
-            <Fragment key={row.id}>
-              <tr style={{ borderBottom: "1px solid #e2e9f2" }}>
-                <td style={{ padding: "6px 4px", color: "#7a8699" }}>{index + 1}</td>
-                <td style={{ padding: "6px 4px", whiteSpace: "nowrap" }}>
-                  {row.type === "opening" ? "—" : formatDateShort(row.occurredAt)}
-                </td>
-                <td style={{ padding: "6px 4px" }}>
-                  <div style={{ fontWeight: 700 }}>
+          {statement.rows.map((row, index) => {
+            const zebra = index % 2 === 1 ? ZEBRA : "#ffffff";
+            const bg = row.type === "opening" ? OPENING_BG : zebra;
+            return (
+              <Fragment key={row.id}>
+                <tr>
+                  <td style={tdStyle({ background: bg, color: MUTED })}>
+                    {index + 1}
+                  </td>
+                  <td
+                    style={tdStyle({
+                      background: bg,
+                      whiteSpace: "nowrap",
+                    })}
+                  >
+                    {row.type === "opening"
+                      ? "—"
+                      : formatDateShort(row.occurredAt)}
+                  </td>
+                  <td style={tdStyle({ background: bg, fontWeight: 800 })}>
                     {row.label}
-                    {row.reference && row.reference !== "—" ? ` · ${row.reference}` : ""}
-                  </div>
-                  {row.notes ? (
-                    <div style={{ fontSize: 10, color: "#66758a" }}>{row.notes}</div>
-                  ) : null}
-                </td>
-                <td style={{ padding: "6px 4px", whiteSpace: "nowrap" }}>
-                  {moneyCell(row.debit)}
-                </td>
-                <td style={{ padding: "6px 4px", whiteSpace: "nowrap" }}>
-                  {moneyCell(row.credit)}
-                </td>
-                <td style={{ padding: "6px 4px", whiteSpace: "nowrap", fontWeight: 800 }}>
-                  {formatCurrency(row.runningBalance)}
-                </td>
-              </tr>
-              {showLines && row.lines.length > 0
-                ? row.lines.map((line, lineIdx) => (
-                    <tr
-                      key={`${row.id}-line-${lineIdx}`}
-                      style={{ background: "#f7fafc", borderBottom: "1px solid #eef1f6" }}
-                    >
-                      <td />
-                      <td />
-                      <td
-                        colSpan={4}
-                        style={{ padding: "4px 4px 6px", fontSize: 10, color: "#526176" }}
+                  </td>
+                  <td style={tdStyle({ background: bg })}>
+                    <div>{row.reference}</div>
+                    {row.notes ? (
+                      <div
+                        style={{
+                          fontSize: 10,
+                          color: MUTED,
+                          marginTop: 2,
+                          fontWeight: 600,
+                        }}
                       >
-                        {[
-                          line.name,
-                          line.detail,
-                          line.qty ? `× ${line.qty}` : null,
-                          line.unitPrice != null
-                            ? formatCurrency(line.unitPrice)
-                            : null,
-                          line.total != null ? formatCurrency(line.total) : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </td>
-                    </tr>
-                  ))
-                : null}
-            </Fragment>
-          ))}
+                        {row.notes}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td
+                    style={tdStyle({
+                      background: bg,
+                      whiteSpace: "nowrap",
+                      color: row.debit ? DEBIT : MUTED,
+                      fontWeight: 800,
+                    })}
+                  >
+                    {moneyCell(row.debit)}
+                  </td>
+                  <td
+                    style={tdStyle({
+                      background: bg,
+                      whiteSpace: "nowrap",
+                      color: row.credit ? CREDIT : MUTED,
+                      fontWeight: 800,
+                    })}
+                  >
+                    {moneyCell(row.credit)}
+                  </td>
+                  <td
+                    style={tdStyle({
+                      background: bg,
+                      whiteSpace: "nowrap",
+                      fontWeight: 900,
+                    })}
+                  >
+                    {formatCurrency(row.runningBalance)}
+                  </td>
+                </tr>
+                {showLines && row.lines.length > 0 ? (
+                  <tr>
+                    <td
+                      colSpan={7}
+                      style={{
+                        padding: 8,
+                        background: NESTED_BG,
+                        border: `1px solid ${LINE}`,
+                      }}
+                    >
+                      <LinesTable lines={row.lines} />
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
+            );
+          })}
+          <tr>
+            <td
+              colSpan={4}
+              style={tdStyle({
+                background: HEAD,
+                color: "#ffffff",
+                fontWeight: 900,
+              })}
+            >
+              الإجمالي
+            </td>
+            <td
+              style={tdStyle({
+                background: HEAD,
+                color: "#ffffff",
+                fontWeight: 900,
+                whiteSpace: "nowrap",
+              })}
+            >
+              {formatCurrency(statement.periodDebit)}
+            </td>
+            <td
+              style={tdStyle({
+                background: HEAD,
+                color: "#ffffff",
+                fontWeight: 900,
+                whiteSpace: "nowrap",
+              })}
+            >
+              {formatCurrency(statement.periodCredit)}
+            </td>
+            <td
+              style={tdStyle({
+                background: HEAD,
+                color: "#ffffff",
+                fontWeight: 900,
+                whiteSpace: "nowrap",
+              })}
+            >
+              {formatCurrency(statement.closingBalance)}
+            </td>
+          </tr>
         </tbody>
       </table>
     </div>
