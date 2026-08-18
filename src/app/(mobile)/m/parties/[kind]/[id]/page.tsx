@@ -7,6 +7,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { canAccess, profileSubject } from "@/lib/permissions";
 import {
   buildPartyOpeningRow,
+  fetchCrossAppPartyHistory,
   fetchCustomerHistory,
   fetchSupplierHistory,
   invoiceTypeLabel,
@@ -61,7 +62,9 @@ type Filter =
   | "purchase_return"
   | "collection"
   | "disbursement"
-  | "opening";
+  | "opening"
+  | "workshop"
+  | "plisse";
 
 export default function MobilePartyDetailPage() {
   const params = useParams<{ kind: string; id: string }>();
@@ -174,13 +177,16 @@ export default function MobilePartyDetailPage() {
         return;
       }
 
-      const [history, payments, open] = await withTimeout(
+      const [history, payments, open, crossApp] = await withTimeout(
         Promise.all([
           kind === "customer"
             ? fetchCustomerHistory(id)
             : fetchSupplierHistory(id),
           listPartyPayments(supabase, kind, id),
           fetchOpenInvoicesForParty(supabase, kind, id),
+          fetchCrossAppPartyHistory(kind, id).catch(
+            () => [] as PartyInvoiceRow[]
+          ),
         ]),
         8000
       );
@@ -202,6 +208,7 @@ export default function MobilePartyDetailPage() {
       const merged = [
         ...(opening ? [opening] : []),
         ...history,
+        ...crossApp,
         ...paymentRows,
       ].sort(
         (a, b) =>
@@ -229,6 +236,12 @@ export default function MobilePartyDetailPage() {
 
   const filtered = useMemo(() => {
     if (filter === "all") return rows;
+    if (filter === "workshop") {
+      return rows.filter((r) => r.isCrossApp && r.sourceSystem === "aa");
+    }
+    if (filter === "plisse") {
+      return rows.filter((r) => r.isCrossApp && r.sourceSystem === "plisse");
+    }
     return rows.filter((r) => r.type === filter);
   }, [filter, rows]);
 
@@ -256,7 +269,7 @@ export default function MobilePartyDetailPage() {
       total: formatCurrency(Number(party.balance)),
       metaLines,
       lines: chronological.map((row) => ({
-        title: `${invoiceTypeLabel(row.type)} · ${row.invoice_number}`,
+        title: `${invoiceTypeLabel(row.type, row.sourceSystem)} · ${row.invoice_number}`,
         subtitle: formatDateShort(row.created_at),
         amount: formatCurrency(Number(row.total)),
       })),
@@ -309,6 +322,8 @@ export default function MobilePartyDetailPage() {
           { id: "sale", label: "بيع" },
           { id: "sale_return", label: "مرتجع" },
           { id: "collection", label: "تحصيل" },
+          { id: "workshop", label: "ورشة" },
+          { id: "plisse", label: "بلسية" },
           { id: "opening", label: "افتتاحي" },
         ]
       : [
@@ -316,6 +331,8 @@ export default function MobilePartyDetailPage() {
           { id: "purchase", label: "شراء" },
           { id: "purchase_return", label: "مرتجع" },
           { id: "disbursement", label: "سداد" },
+          { id: "workshop", label: "ورشة" },
+          { id: "plisse", label: "بلسية" },
           { id: "opening", label: "افتتاحي" },
         ];
 
@@ -389,13 +406,17 @@ export default function MobilePartyDetailPage() {
                     const clickable =
                       !row.isOpening &&
                       !row.isPartyPayment &&
+                      !row.isCrossApp &&
                       [
                         "sale",
                         "purchase",
                         "sale_return",
                         "purchase_return",
                       ].includes(row.type);
-                    const showType = filter === "all";
+                    const showType =
+                      filter === "all" ||
+                      filter === "workshop" ||
+                      filter === "plisse";
                     const invoiceRemaining =
                       clickable &&
                       (row.type === "sale" || row.type === "purchase")
@@ -405,7 +426,7 @@ export default function MobilePartyDetailPage() {
                           )
                         : null;
                     const typeBit = showType
-                      ? `${invoiceTypeLabel(row.type)} · `
+                      ? `${invoiceTypeLabel(row.type, row.sourceSystem)} · `
                       : "";
                     const remainBit =
                       invoiceRemaining != null && invoiceRemaining > 0.001
@@ -413,18 +434,24 @@ export default function MobilePartyDetailPage() {
                         : invoiceRemaining != null && invoiceRemaining <= 0.001
                           ? " · مسددة"
                           : "";
+                    const noteBit =
+                      row.isCrossApp && row.notes
+                        ? ` · ${row.notes}`
+                        : "";
                     return (
                       <MobileListRow
                         key={row.id}
                         title={row.invoice_number}
-                        subtitle={`${typeBit}${formatDateRelative(row.created_at)}${remainBit}`}
+                        subtitle={`${typeBit}${formatDateRelative(row.created_at)}${remainBit}${noteBit}`}
                         amount={Number(row.total)}
                         amountTone={
                           row.type === "collection" ||
-                          row.type === "sale_return"
+                          row.type === "sale_return" ||
+                          row.type === "workshop_collection"
                             ? "positive"
                             : row.type === "disbursement" ||
-                                row.type === "purchase_return"
+                                row.type === "purchase_return" ||
+                                row.type === "workshop_sale"
                               ? "negative"
                               : "muted"
                         }
