@@ -5,9 +5,44 @@ import { Download, X } from "lucide-react";
 import {
   isBrowserOnline,
   isOfflinePackReady,
+  OFFLINE_CACHE_VERSION,
   scheduleBackgroundSync,
   SERWIST_SW_URL,
 } from "@/lib/offline";
+
+const CACHE_VERSION_KEY = "windoor-cache-version";
+
+async function wipeStalePwaCaches(): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  let prev: string | null = null;
+  try {
+    prev = localStorage.getItem(CACHE_VERSION_KEY);
+  } catch {
+    prev = null;
+  }
+  if (prev === OFFLINE_CACHE_VERSION) return false;
+
+  sessionStorage.setItem("windoor-sw-reloading", "1");
+  try {
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch {
+    /* ignore — still bump version so we don't loop forever */
+  }
+  try {
+    localStorage.setItem(CACHE_VERSION_KEY, OFFLINE_CACHE_VERSION);
+  } catch {
+    // Can't persist — skip reload so we don't loop in private mode.
+    return false;
+  }
+  return true;
+}
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
@@ -60,6 +95,7 @@ export function PWARegister() {
   const [installBusy, setInstallBusy] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     let registration: ServiceWorkerRegistration | null = null;
     let warmTimer: number | undefined;
     let updateTimer: number | undefined;
@@ -79,8 +115,17 @@ export function PWARegister() {
       onControllerChange
     );
 
-    void registerServiceWorker().then((reg) => {
-      if (!reg) return;
+    void (async () => {
+      const wiped = await wipeStalePwaCaches();
+      if (cancelled) return;
+      if (wiped) {
+        window.location.reload();
+        return;
+      }
+      sessionStorage.removeItem("windoor-sw-reloading");
+
+      const reg = await registerServiceWorker();
+      if (!reg || cancelled) return;
       registration = reg;
       if (reg.waiting) {
         reg.waiting.postMessage({ type: "SKIP_WAITING" });
@@ -120,7 +165,7 @@ export function PWARegister() {
           })();
         }, 2000);
       }
-    });
+    })();
 
     const onOnline = () => {
       void (async () => {
@@ -132,6 +177,7 @@ export function PWARegister() {
     window.addEventListener("online", onOnline);
 
     return () => {
+      cancelled = true;
       window.removeEventListener("online", onOnline);
       navigator.serviceWorker?.removeEventListener(
         "controllerchange",
