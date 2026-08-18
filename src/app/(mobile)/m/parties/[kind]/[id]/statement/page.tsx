@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { createClient } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";
@@ -168,82 +168,141 @@ export default function MobilePartyStatementPage() {
           <MobileSkeleton rows={8} />
         ) : (
           <>
-            <div className="mobile-money-hero mb-3">
-              <p className="mobile-money-hero__label">الرصيد الختامي</p>
-              <p className="mobile-money-hero__amount">
-                {formatCurrency(statement.closingBalance)}
-              </p>
-              <p className="mobile-money-hero__meta">
-                رصيد سابق {formatCurrency(statement.openingBalance)}
-              </p>
-              <p className="mobile-money-hero__note">
-                مدين {formatCurrency(statement.periodDebit)} · دائن{" "}
-                {formatCurrency(statement.periodCredit)}
-              </p>
+            <MobileSection title="ملخص الكشف">
+            <div className="stmt-table-wrap">
+              <table className="stmt-summary">
+                <tbody>
+                  <tr>
+                    <th>رصيد سابق</th>
+                    <td>{formatCurrency(statement.openingBalance)}</td>
+                  </tr>
+                  <tr>
+                    <th>
+                      {statement.kind === "customer"
+                        ? "مدين (عليه)"
+                        : "مدين (مدفوع)"}
+                    </th>
+                    <td className="stmt-table__debit">
+                      {formatCurrency(statement.periodDebit)}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th>
+                      {statement.kind === "customer"
+                        ? "دائن (له)"
+                        : "دائن (علينا)"}
+                    </th>
+                    <td className="stmt-table__credit">
+                      {formatCurrency(statement.periodCredit)}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th>الرصيد الختامي</th>
+                    <td className="stmt-table__balance">
+                      {formatCurrency(statement.closingBalance)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
+            </MobileSection>
 
-            <MobileSection title="الحركات">
-              <div className="mobile-panel overflow-x-auto">
+            <MobileSection title="جدول الحركات">
+              <div className="stmt-table-wrap">
                 {statement.rows.length === 0 ? (
                   <MobileEmpty message="لا توجد حركات في هذه الفترة" />
                 ) : (
-                  <table className="w-full min-w-[520px] border-collapse text-[11px]">
+                  <table className="stmt-table">
                     <thead>
-                      <tr className="border-b border-[var(--border)] text-[var(--muted)]">
-                        <th className="px-1 py-2 text-right font-bold">التاريخ</th>
-                        <th className="px-1 py-2 text-right font-bold">البيان</th>
-                        <th className="px-1 py-2 text-right font-bold">مدين</th>
-                        <th className="px-1 py-2 text-right font-bold">دائن</th>
-                        <th className="px-1 py-2 text-right font-bold">رصيد</th>
+                      <tr>
+                        <th>#</th>
+                        <th>التاريخ</th>
+                        <th>النوع</th>
+                        <th>المستند</th>
+                        <th>مدين</th>
+                        <th>دائن</th>
+                        <th>رصيد</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {statement.rows.map((row) => (
-                        <tr
-                          key={row.id}
-                          className="border-b border-[var(--border)] align-top"
-                        >
-                          <td className="whitespace-nowrap px-1 py-2">
-                            {row.type === "opening"
-                              ? "—"
-                              : formatDateShort(row.occurredAt)}
-                          </td>
-                          <td className="px-1 py-2">
-                            <div className="font-bold">
-                              {row.label}
-                              {row.reference && row.reference !== "—"
-                                ? ` · ${row.reference}`
-                                : ""}
-                            </div>
-                            {showLines && row.lines.length > 0 ? (
-                              <ul className="mt-1 space-y-0.5 text-[10px] font-semibold text-[var(--muted)]">
-                                {row.lines.map((line, idx) => (
-                                  <li key={`${row.id}-l-${idx}`}>
-                                    {[
-                                      line.name,
-                                      line.qty ? `× ${line.qty}` : null,
-                                      line.total != null
-                                        ? formatCurrency(line.total)
-                                        : null,
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" · ")}
-                                  </li>
-                                ))}
-                              </ul>
-                            ) : null}
-                          </td>
-                          <td className="whitespace-nowrap px-1 py-2">
-                            {moneyCell(row.debit)}
-                          </td>
-                          <td className="whitespace-nowrap px-1 py-2">
-                            {moneyCell(row.credit)}
-                          </td>
-                          <td className="whitespace-nowrap px-1 py-2 font-extrabold">
-                            {formatCurrency(row.runningBalance)}
-                          </td>
-                        </tr>
+                      {statement.rows.map((row, index) => (
+                        <Fragment key={row.id}>
+                          <tr
+                            className={
+                              row.type === "opening" ? "stmt-table__opening" : undefined
+                            }
+                          >
+                            <td>{index + 1}</td>
+                            <td className="whitespace-nowrap">
+                              {row.type === "opening"
+                                ? "—"
+                                : formatDateShort(row.occurredAt)}
+                            </td>
+                            <td className="font-extrabold">{row.label}</td>
+                            <td>
+                              <div>{row.reference}</div>
+                              {row.notes ? (
+                                <div className="mt-0.5 text-[10px] font-semibold text-[var(--muted)]">
+                                  {row.notes}
+                                </div>
+                              ) : null}
+                            </td>
+                            <td className="stmt-table__debit">
+                              {moneyCell(row.debit)}
+                            </td>
+                            <td className="stmt-table__credit">
+                              {moneyCell(row.credit)}
+                            </td>
+                            <td className="stmt-table__balance">
+                              {formatCurrency(row.runningBalance)}
+                            </td>
+                          </tr>
+                          {showLines && row.lines.length > 0 ? (
+                            <tr className="stmt-table__nested">
+                              <td colSpan={7}>
+                                <table className="stmt-table stmt-table--compact">
+                                  <thead>
+                                    <tr>
+                                      <th>الصنف</th>
+                                      <th>المواصفات</th>
+                                      <th>الكمية</th>
+                                      <th>سعر الوحدة</th>
+                                      <th>الإجمالي</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {row.lines.map((line, idx) => (
+                                      <tr key={`${row.id}-l-${idx}`}>
+                                        <td className="font-bold">{line.name}</td>
+                                        <td>{line.detail || "—"}</td>
+                                        <td className="whitespace-nowrap">
+                                          {line.qty || "—"}
+                                        </td>
+                                        <td className="whitespace-nowrap">
+                                          {line.unitPrice != null
+                                            ? formatCurrency(line.unitPrice)
+                                            : "—"}
+                                        </td>
+                                        <td className="stmt-table__balance">
+                                          {line.total != null
+                                            ? formatCurrency(line.total)
+                                            : "—"}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </td>
+                            </tr>
+                          ) : null}
+                        </Fragment>
                       ))}
+                      <tr className="stmt-table__foot">
+                        <td colSpan={4}>الإجمالي</td>
+                        <td>{formatCurrency(statement.periodDebit)}</td>
+                        <td>{formatCurrency(statement.periodCredit)}</td>
+                        <td>{formatCurrency(statement.closingBalance)}</td>
+                      </tr>
                     </tbody>
                   </table>
                 )}
