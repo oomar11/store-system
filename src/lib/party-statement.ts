@@ -248,7 +248,7 @@ async function fetchPartyRow(
   const table = kind === "customer" ? "customers" : "suppliers";
   const { data, error } = await client
     .from(table)
-    .select("id, name, phone, address, balance, opening_balance, linked_supplier_id, linked_customer_id")
+    .select("id, name, phone, address, balance, opening_balance")
     .eq("id", id)
     .maybeSingle();
   if (error) throw new Error(error.message);
@@ -419,10 +419,12 @@ export async function buildPartyStatement(
   const fromIso = dateFrom ? dayStart(dateFrom) : null;
 
   const table = kind === "customer" ? "customers" : "suppliers";
+  const linkCol =
+    kind === "customer" ? "linked_supplier_id" : "linked_customer_id";
   const { data: rawParty, error: partyErr } = await client
     .from(table)
     .select(
-      "id, name, phone, address, balance, opening_balance, linked_supplier_id, linked_customer_id"
+      `id, name, phone, address, balance, opening_balance, ${linkCol}`
     )
     .eq("id", params.partyId)
     .maybeSingle();
@@ -442,8 +444,10 @@ export async function buildPartyStatement(
   let linkedParty: StatementParty | null = null;
   const linkedId =
     kind === "customer"
-      ? (rawParty.linked_supplier_id as string | null)
-      : (rawParty.linked_customer_id as string | null);
+      ? ((rawParty as { linked_supplier_id?: string | null }).linked_supplier_id ||
+        null)
+      : ((rawParty as { linked_customer_id?: string | null }).linked_customer_id ||
+        null);
   if (linkedId) {
     linkedParty = await fetchPartyRow(
       client,
