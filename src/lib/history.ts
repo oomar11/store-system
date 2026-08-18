@@ -1,3 +1,4 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase";
 import { partyPaymentDocNumber } from "@/lib/party-payments";
 
@@ -280,9 +281,10 @@ export async function fetchSupplierHistory(supplierId: string): Promise<PartyInv
 /** حركات الورش المرتبطة بطرف في المحل (PVC / بلسية) */
 export async function fetchCrossAppPartyHistory(
   partyType: "customer" | "supplier",
-  partyId: string
+  partyId: string,
+  client?: SupabaseClient
 ): Promise<PartyInvoiceRow[]> {
-  const supabase = createClient();
+  const supabase = client || createClient();
   const baseCols =
     "id, source_system, source_ref, entry_type, amount, direction, occurred_at, notes, project_label";
   let data: Record<string, unknown>[] | null = null;

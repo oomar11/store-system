@@ -19,6 +19,7 @@ import {
   listPartyPayments,
   previewPartyPaymentAllocation,
   type OpenInvoiceForPayment,
+  type PartyPaymentRow,
 } from "@/lib/party-payments";
 import {
   applyPartyPaymentOnlineOrQueue,
@@ -169,37 +170,42 @@ export default function MobilePartyDetailPage() {
         },
       });
 
-      // History/payments need network — skip gracefully offline
-      if (offline) {
-        setRows([]);
-        setOpenTotal(0);
-        setOpenInvoices([]);
-        return;
+      // History: try each source on its own so a slow payments query or a
+      // false "offline" flag does not wipe workshop/plisse rows.
+      async function settled<T>(promise: Promise<T>, fallback: T): Promise<T> {
+        try {
+          return await withTimeout(promise, 12000);
+        } catch {
+          return fallback;
+        }
       }
 
-      const [history, payments, open, crossApp] = await withTimeout(
-        Promise.all([
-          kind === "customer"
-            ? fetchCustomerHistory(id)
-            : fetchSupplierHistory(id),
-          listPartyPayments(supabase, kind, id),
-          fetchOpenInvoicesForParty(supabase, kind, id),
-          fetchCrossAppPartyHistory(kind, id).catch(
-            () => [] as PartyInvoiceRow[]
+      const [history, payments, open, crossApp, partyForOpening] =
+        await Promise.all([
+          settled(
+            kind === "customer"
+              ? fetchCustomerHistory(id)
+              : fetchSupplierHistory(id),
+            [] as PartyInvoiceRow[]
           ),
-        ]),
-        8000
-      );
+          settled(listPartyPayments(supabase, kind, id), [] as PartyPaymentRow[]),
+          settled(fetchOpenInvoicesForParty(supabase, kind, id), []),
+          settled(fetchCrossAppPartyHistory(kind, id, supabase), []),
+          settled(
+            (async () => {
+              const table = kind === "customer" ? "customers" : "suppliers";
+              const { data } = await supabase
+                .from(table)
+                .select("*")
+                .eq("id", id)
+                .maybeSingle();
+              return (data as Customer | Supplier | null) || null;
+            })(),
+            null as Customer | Supplier | null
+          ),
+        ]);
 
-      const partyForOpening = await (async () => {
-        const table = kind === "customer" ? "customers" : "suppliers";
-        const { data } = await supabase
-          .from(table)
-          .select("*")
-          .eq("id", id)
-          .maybeSingle();
-        return (data as Customer | Supplier | null) || null;
-      })();
+      if (partyForOpening) setParty(partyForOpening);
 
       const opening = partyForOpening
         ? buildPartyOpeningRow(partyForOpening)
@@ -218,9 +224,11 @@ export default function MobilePartyDetailPage() {
       setRows(merged);
       setOpenInvoices(open);
       setOpenTotal(open.reduce((s, i) => s + i.remaining, 0));
+      if (merged.length === 0 && (!online || !navigator.onLine)) {
+        setError("الاتصال ضعيف — حدّث الصفحة لما النت يستقر");
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "تعذر تحميل الحساب");
-      setParty(null);
       setRows([]);
       setOpenInvoices([]);
       setOpenTotal(0);
