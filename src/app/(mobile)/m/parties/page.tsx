@@ -21,10 +21,16 @@ import {
   MobileSkeleton,
 } from "@/components/mobile/MobileUI";
 import type { Customer, Supplier } from "@/types";
-import { BUSINESS_LINE_LABELS, normalizeBusinessLines } from "@/lib/business-lines";
+import {
+  BUSINESS_LINE_LABELS,
+  normalizeBusinessLines,
+  type BusinessLine,
+} from "@/lib/business-lines";
+import { hydrateCustomersBusinessLines } from "@/lib/customer-business-lines";
 
 type Kind = "customers" | "suppliers";
 type BalanceFilter = "all" | "debt" | "credit" | "zero";
+type LineFilter = "all" | BusinessLine;
 
 export default function MobilePartiesPage() {
   const supabase = useMemo(() => createClient(), []);
@@ -38,6 +44,7 @@ export default function MobilePartiesPage() {
 
   const [kind, setKind] = useState<Kind>("customers");
   const [filter, setFilter] = useState<BalanceFilter>("all");
+  const [lineFilter, setLineFilter] = useState<LineFilter>("all");
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -119,7 +126,10 @@ export default function MobilePartiesPage() {
         );
         return {
           customers: canCustomers
-            ? ((custRes.data || []) as Customer[])
+            ? await hydrateCustomersBusinessLines(
+                supabase,
+                (custRes.data || []) as Customer[]
+              )
             : [],
           suppliers: canSuppliers
             ? ((suppRes.data || []) as Supplier[])
@@ -212,9 +222,13 @@ export default function MobilePartiesPage() {
     return raw.filter((p) => {
       if (q && !smartSearchMatch(q, [p.name, p.phone || ""])) return false;
       const bal = Number(p._displayBalance);
-      if (filter === "debt") return bal > 0.001;
-      if (filter === "credit") return bal < -0.001;
-      if (filter === "zero") return Math.abs(bal) <= 0.001;
+      if (filter === "debt" && !(bal > 0.001)) return false;
+      if (filter === "credit" && !(bal < -0.001)) return false;
+      if (filter === "zero" && !(Math.abs(bal) <= 0.001)) return false;
+      if (kind === "customers" && lineFilter !== "all") {
+        const lines = normalizeBusinessLines((p as Customer).business_lines);
+        if (!lines.includes(lineFilter)) return false;
+      }
       return true;
     });
   }, [
@@ -222,6 +236,7 @@ export default function MobilePartiesPage() {
     customers,
     filter,
     kind,
+    lineFilter,
     q,
     supplierBalById,
     suppliers,
@@ -294,6 +309,27 @@ export default function MobilePartiesPage() {
             </MobileChip>
           ))}
         </div>
+
+        {kind === "customers" ? (
+          <div className="mobile-chip-row">
+            {(
+              [
+                ["all", "كل التصنيفات"],
+                ["wire", BUSINESS_LINE_LABELS.wire],
+                ["store", BUSINESS_LINE_LABELS.store],
+                ["workshop", BUSINESS_LINE_LABELS.workshop],
+              ] as const
+            ).map(([id, label]) => (
+              <MobileChip
+                key={id}
+                active={lineFilter === id}
+                onClick={() => setLineFilter(id)}
+              >
+                {label}
+              </MobileChip>
+            ))}
+          </div>
+        ) : null}
 
         <div className="mobile-field">
           <input
