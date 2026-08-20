@@ -320,13 +320,13 @@ export default function SuppliersPage() {
         label: "كشف حساب",
         tone: "print",
         icon: "printer",
-        onClick: () => setStatementSupplier(supplier),
+        onClick: () => setDetailedStatementSupplier(supplier),
       },
       {
-        label: "كشف حساب مفصّل",
+        label: "كشف مختصر",
         tone: "print",
         icon: "printer",
-        onClick: () => setDetailedStatementSupplier(supplier),
+        onClick: () => setStatementSupplier(supplier),
       },
       {
         label: "حركة",

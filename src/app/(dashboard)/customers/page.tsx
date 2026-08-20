@@ -414,13 +414,13 @@ export default function CustomersPage() {
         label: "كشف حساب",
         tone: "print",
         icon: "printer",
-        onClick: () => setStatementCustomer(customer),
+        onClick: () => setDetailedStatementCustomer(customer),
       },
       {
-        label: "كشف حساب مفصّل",
+        label: "كشف مختصر",
         tone: "print",
         icon: "printer",
-        onClick: () => setDetailedStatementCustomer(customer),
+        onClick: () => setStatementCustomer(customer),
       },
       {
         label: "حركة",

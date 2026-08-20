@@ -1107,17 +1107,17 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           </button>
           <button
             type="button"
-            onClick={() => setShowStatement(true)}
+            onClick={() => setShowDetailedStatement(true)}
             className="rounded-xl border border-[#9ec5f5] bg-[#eaf4ff] px-4 py-2.5 text-sm font-bold text-[#0b5fc4] hover:bg-[#dcecff]"
           >
             كشف حساب
           </button>
           <button
             type="button"
-            onClick={() => setShowDetailedStatement(true)}
-            className="rounded-xl border border-[#9ec5f5] bg-white px-4 py-2.5 text-sm font-bold text-[#0b5fc4] hover:bg-[#eaf4ff]"
+            onClick={() => setShowStatement(true)}
+            className="rounded-xl border border-[#d7e0ea] bg-white px-4 py-2.5 text-sm font-bold text-[#526176] hover:bg-[#f7f9fc]"
           >
-            كشف حساب مفصّل
+            كشف مختصر
           </button>
           {canManageLink && !isDualLinked ? (
             <button
