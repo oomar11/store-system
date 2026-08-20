@@ -37,6 +37,7 @@ import {
 import { PrintReportPreview } from "@/components/print/PrintReportPreview";
 import { PrintListButton } from "@/components/print/PrintListButton";
 import { EntityStatementPreview } from "@/components/print/EntityStatementPreview";
+import { PartyStatementPreview } from "@/components/print/PartyStatementPreview";
 import { PartyPaymentPrintPreview } from "@/components/print/PartyPaymentPrintPreview";
 import {
   DocumentPrintPreview,
@@ -166,6 +167,7 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
   const [selectedOp, setSelectedOp] = useState<InvoiceOpSelection | null>(null);
   const [showMovementsPrint, setShowMovementsPrint] = useState(false);
   const [showStatement, setShowStatement] = useState(false);
+  const [showDetailedStatement, setShowDetailedStatement] = useState(false);
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [partyPayments, setPartyPayments] = useState<PartyPaymentRow[]>([]);
   const [deletingPaymentId, setDeletingPaymentId] = useState<string | null>(
@@ -1110,6 +1112,13 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
           >
             كشف حساب
           </button>
+          <button
+            type="button"
+            onClick={() => setShowDetailedStatement(true)}
+            className="rounded-xl border border-[#9ec5f5] bg-white px-4 py-2.5 text-sm font-bold text-[#0b5fc4] hover:bg-[#eaf4ff]"
+          >
+            كشف حساب مفصّل
+          </button>
           {canManageLink && !isDualLinked ? (
             <button
               type="button"
@@ -2042,6 +2051,16 @@ export function PartyDetailPage({ kind, partyId }: PartyDetailPageProps) {
               : null
           }
           netBalanceLabel={netBalance?.label}
+        />
+      )}
+
+      {showDetailedStatement && (
+        <PartyStatementPreview
+          kind={kind}
+          partyId={party.id}
+          partyName={party.name}
+          settings={settings}
+          onClose={() => setShowDetailedStatement(false)}
         />
       )}
 

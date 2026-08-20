@@ -16,6 +16,7 @@ import { useRowContextMenu, toContextMenuItems } from "@/components/ui/ContextMe
 import { Modal } from "@/components/ui/Modal";
 import { PrintReportPreview } from "@/components/print/PrintReportPreview";
 import { EntityStatementPreview } from "@/components/print/EntityStatementPreview";
+import { PartyStatementPreview } from "@/components/print/PartyStatementPreview";
 import { PrintListButton } from "@/components/print/PrintListButton";
 import { customerListColumns } from "@/components/print/report-columns";
 import { ExcelToolbar } from "@/components/excel/ExcelToolbar";
@@ -77,6 +78,8 @@ export default function CustomersPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [showListPrint, setShowListPrint] = useState(false);
   const [statementCustomer, setStatementCustomer] = useState<Customer | null>(null);
+  const [detailedStatementCustomer, setDetailedStatementCustomer] =
+    useState<Customer | null>(null);
   const supabase = createClient();
   const { openMenu, menu: contextMenu } = useRowContextMenu();
 
@@ -412,6 +415,12 @@ export default function CustomersPage() {
         tone: "print",
         icon: "printer",
         onClick: () => setStatementCustomer(customer),
+      },
+      {
+        label: "كشف حساب مفصّل",
+        tone: "print",
+        icon: "printer",
+        onClick: () => setDetailedStatementCustomer(customer),
       },
       {
         label: "حركة",
@@ -825,6 +834,16 @@ export default function CustomersPage() {
           party={statementCustomer}
           settings={settings}
           onClose={() => setStatementCustomer(null)}
+        />
+      )}
+
+      {detailedStatementCustomer && (
+        <PartyStatementPreview
+          kind="customer"
+          partyId={detailedStatementCustomer.id}
+          partyName={detailedStatementCustomer.name}
+          settings={settings}
+          onClose={() => setDetailedStatementCustomer(null)}
         />
       )}
 
