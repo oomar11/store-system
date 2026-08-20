@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { FileSpreadsheet, Printer, X } from "lucide-react";
 import { createClient } from "@/lib/supabase";
 import { printReport } from "@/lib/print";
+import { formatCurrency, formatDateShort } from "@/lib/utils";
 import {
   buildPartyStatement,
   daysAgoIsoDate,
@@ -16,6 +17,7 @@ import {
 import type { Settings } from "@/types";
 import { DateField } from "@/components/ui/DateField";
 import { PartyStatementDocument } from "@/components/mobile/PartyStatementDocument";
+import { MobileStatementShare } from "@/components/mobile/MobileStatementShare";
 
 type Props = {
   kind: PartyKind;
@@ -26,6 +28,11 @@ type Props = {
   initialDateFrom?: string;
   initialDateTo?: string;
 };
+
+function moneyCell(value: number) {
+  if (Math.abs(value) < 0.0005) return "—";
+  return formatCurrency(value);
+}
 
 export function PartyStatementPreview({
   kind,
@@ -83,7 +90,6 @@ export function PartyStatementPreview({
         if (!cancelled) setLoading(false);
       }
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- load statement when filters change
     void load();
     return () => {
       cancelled = true;
@@ -101,16 +107,6 @@ export function PartyStatementPreview({
 
   if (!canPortal) return null;
 
-  const documentNode =
-    statement && !loading ? (
-      <PartyStatementDocument
-        statement={statement}
-        settings={settings}
-        showLines={showLines}
-        issuedAt={issuedAt}
-      />
-    ) : null;
-
   return createPortal(
     <div className="print-portal fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm overflow-y-auto">
       <div className="my-6 w-full max-w-5xl overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 shadow-2xl no-print">
@@ -120,9 +116,7 @@ export function PartyStatementPreview({
               <FileSpreadsheet className="h-5 w-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-800">
-                كشف حساب مفصّل
-              </h3>
+              <h3 className="text-sm font-bold text-slate-800">كشف حساب</h3>
               <p className="text-[11px] text-slate-500">{partyName}</p>
             </div>
           </div>
@@ -195,36 +189,192 @@ export function PartyStatementPreview({
             <p className="text-sm font-bold text-red-600">{error}</p>
           ) : null}
 
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 rounded-xl border border-slate-300 py-3 text-xs font-semibold"
-            >
-              إغلاق
-            </button>
+          <div className="grid gap-2 sm:grid-cols-2">
             <button
               type="button"
               onClick={() => printReport()}
               disabled={loading || !statement}
-              className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-blue-700 py-3 text-xs font-bold text-white hover:bg-blue-800 disabled:opacity-50"
+              className="flex items-center justify-center gap-2 rounded-xl bg-blue-700 py-3 text-xs font-bold text-white hover:bg-blue-800 disabled:opacity-50"
             >
               <Printer className="h-4 w-4" />
-              طباعة الكشف المفصّل
+              طباعة
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-slate-300 py-3 text-xs font-semibold"
+            >
+              إغلاق
             </button>
           </div>
+
+          {!loading && statement ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="mb-2 text-xs font-bold text-slate-600">
+                إرسال مثل الموبايل
+              </p>
+              <MobileStatementShare
+                statement={statement}
+                settings={settings}
+                showLines={showLines}
+                disabled={loading}
+              />
+            </div>
+          ) : null}
         </div>
 
-        <div className="max-h-[52vh] overflow-y-auto bg-slate-200 p-4">
-          <div className="mx-auto max-w-[210mm] overflow-hidden rounded shadow-md">
-            {loading ? (
-              <div className="flex justify-center bg-white py-16">
-                <div className="h-8 w-8 animate-spin rounded-full border-4 border-blue-200 border-t-blue-700" />
+        <div className="max-h-[52vh] space-y-4 overflow-y-auto bg-slate-200 p-4">
+          {loading || !statement ? (
+            <div className="flex justify-center bg-white py-16">
+              <div className="h-8 w-8 animate-spin rounded-full border-4 border-blue-200 border-t-blue-700" />
+            </div>
+          ) : (
+            <>
+              <div className="stmt-table-wrap bg-white">
+                <table className="stmt-summary">
+                  <tbody>
+                    <tr>
+                      <th>رصيد سابق</th>
+                      <td>{formatCurrency(statement.openingBalance)}</td>
+                    </tr>
+                    <tr>
+                      <th>
+                        {statement.kind === "customer"
+                          ? "مدين (عليه)"
+                          : "مدين (مدفوع)"}
+                      </th>
+                      <td className="stmt-table__debit">
+                        {formatCurrency(statement.periodDebit)}
+                      </td>
+                    </tr>
+                    <tr>
+                      <th>
+                        {statement.kind === "customer"
+                          ? "دائن (له)"
+                          : "دائن (علينا)"}
+                      </th>
+                      <td className="stmt-table__credit">
+                        {formatCurrency(statement.periodCredit)}
+                      </td>
+                    </tr>
+                    <tr>
+                      <th>الرصيد الختامي</th>
+                      <td className="stmt-table__balance">
+                        {formatCurrency(statement.closingBalance)}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
-            ) : (
-              documentNode
-            )}
-          </div>
+
+              <div className="stmt-table-wrap bg-white">
+                <table className="stmt-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>التاريخ</th>
+                      <th>النوع</th>
+                      <th>المستند</th>
+                      <th>مدين</th>
+                      <th>دائن</th>
+                      <th>رصيد</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {statement.rows.map((row, index) => (
+                      <Fragment key={row.id}>
+                        <tr
+                          className={
+                            row.type === "opening"
+                              ? "stmt-table__opening"
+                              : undefined
+                          }
+                        >
+                          <td>{index + 1}</td>
+                          <td className="whitespace-nowrap">
+                            {row.type === "opening"
+                              ? "—"
+                              : formatDateShort(row.occurredAt)}
+                          </td>
+                          <td className="font-extrabold">{row.label}</td>
+                          <td>
+                            <div>{row.reference}</div>
+                            {row.notes ? (
+                              <div className="mt-0.5 text-[10px] font-semibold text-[var(--muted)]">
+                                {row.notes}
+                              </div>
+                            ) : null}
+                          </td>
+                          <td className="stmt-table__debit">
+                            {moneyCell(row.debit)}
+                          </td>
+                          <td className="stmt-table__credit">
+                            {moneyCell(row.credit)}
+                          </td>
+                          <td className="stmt-table__balance">
+                            {formatCurrency(row.runningBalance)}
+                          </td>
+                        </tr>
+                        {showLines && row.lines.length > 0 ? (
+                          <tr className="stmt-table__nested">
+                            <td colSpan={7}>
+                              <table className="stmt-table stmt-table--compact">
+                                <thead>
+                                  <tr>
+                                    <th>الصنف</th>
+                                    <th>المواصفات</th>
+                                    <th>الكمية</th>
+                                    <th>سعر الوحدة</th>
+                                    <th>الإجمالي</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {row.lines.map((line, idx) => (
+                                    <tr key={`${row.id}-l-${idx}`}>
+                                      <td className="font-bold">{line.name}</td>
+                                      <td>{line.detail || "—"}</td>
+                                      <td className="whitespace-nowrap">
+                                        {line.qty || "—"}
+                                      </td>
+                                      <td className="whitespace-nowrap">
+                                        {line.unitPrice != null
+                                          ? formatCurrency(line.unitPrice)
+                                          : "—"}
+                                      </td>
+                                      <td className="stmt-table__balance">
+                                        {line.total != null
+                                          ? formatCurrency(line.total)
+                                          : "—"}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
+                    ))}
+                    <tr className="stmt-table__foot">
+                      <td colSpan={4}>الإجمالي</td>
+                      <td>{formatCurrency(statement.periodDebit)}</td>
+                      <td>{formatCurrency(statement.periodCredit)}</td>
+                      <td>{formatCurrency(statement.closingBalance)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mx-auto max-w-[210mm] overflow-hidden rounded shadow-md">
+                <PartyStatementDocument
+                  statement={statement}
+                  settings={settings}
+                  showLines={showLines}
+                  issuedAt={issuedAt}
+                />
+              </div>
+            </>
+          )}
         </div>
       </div>
 
