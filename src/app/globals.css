@@ -983,6 +983,18 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator,
     margin: 0 !important;
   }
 
+  .party-statement-print,
+  .party-statement-print * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .party-statement-print > div {
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+  }
+
   .print-report-sheet {
     position: relative;
     min-height: 0 !important;

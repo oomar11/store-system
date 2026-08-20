@@ -148,7 +148,8 @@ export function PartyStatementDocument({
     <div
       dir="rtl"
       style={{
-        width: 794,
+        width: "100%",
+        maxWidth: 794,
         padding: 26,
         background: "#ffffff",
         color: INK,

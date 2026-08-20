@@ -15,6 +15,7 @@ import { useRowContextMenu, toContextMenuItems } from "@/components/ui/ContextMe
 import { Modal } from "@/components/ui/Modal";
 import { PrintReportPreview } from "@/components/print/PrintReportPreview";
 import { EntityStatementPreview } from "@/components/print/EntityStatementPreview";
+import { PartyStatementPreview } from "@/components/print/PartyStatementPreview";
 import { PrintListButton } from "@/components/print/PrintListButton";
 import { supplierListColumns } from "@/components/print/report-columns";
 import { ExcelToolbar } from "@/components/excel/ExcelToolbar";
@@ -55,6 +56,8 @@ export default function SuppliersPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [showListPrint, setShowListPrint] = useState(false);
   const [statementSupplier, setStatementSupplier] = useState<Supplier | null>(null);
+  const [detailedStatementSupplier, setDetailedStatementSupplier] =
+    useState<Supplier | null>(null);
   const supabase = createClient();
   const { openMenu, menu: contextMenu } = useRowContextMenu();
 
@@ -318,6 +321,12 @@ export default function SuppliersPage() {
         tone: "print",
         icon: "printer",
         onClick: () => setStatementSupplier(supplier),
+      },
+      {
+        label: "كشف حساب مفصّل",
+        tone: "print",
+        icon: "printer",
+        onClick: () => setDetailedStatementSupplier(supplier),
       },
       {
         label: "حركة",
@@ -687,6 +696,16 @@ export default function SuppliersPage() {
           party={statementSupplier}
           settings={settings}
           onClose={() => setStatementSupplier(null)}
+        />
+      )}
+
+      {detailedStatementSupplier && (
+        <PartyStatementPreview
+          kind="supplier"
+          partyId={detailedStatementSupplier.id}
+          partyName={detailedStatementSupplier.name}
+          settings={settings}
+          onClose={() => setDetailedStatementSupplier(null)}
         />
       )}
 
