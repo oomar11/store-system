@@ -491,6 +491,7 @@ export function ProductsReportTable({
       profit: sorted.reduce((s, r) => s + r.profit, 0),
       stock: sorted.reduce((s, r) => s + r.stock_qty, 0),
       stockValue: sorted.reduce((s, r) => s + r.stock_value, 0),
+      stockValueSell: sorted.reduce((s, r) => s + r.stock_value_sell, 0),
     }),
     [sorted]
   );
@@ -563,7 +564,7 @@ export function ProductsReportTable({
         </select>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[900px] text-sm">
+        <table className="w-full min-w-[980px] text-sm">
           <thead className="bg-[#f8faff] text-[11px] text-[#687386]">
             <tr>
               <SortableHeader label="الصنف" field="name" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
@@ -574,14 +575,15 @@ export function ProductsReportTable({
               <SortableHeader label="الربح" field="profit" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
               <SortableHeader label="الهامش" field="margin" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
               <SortableHeader label="المخزون" field="stock_qty" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
-              <SortableHeader label="القيمة" field="stock_value" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
+              <SortableHeader label="تكلفة" field="stock_value" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
+              <SortableHeader label="بيع" field="stock_value_sell" sortField={sortConfig.key} sortDirection={sortConfig.direction} onSort={requestSort} />
               <th className="px-3 py-2.5 text-right font-semibold">الحالة</th>
               <th className="px-3 py-2.5 text-right font-semibold">إجراء</th>
             </tr>
           </thead>
           <tbody>
             {sorted.length === 0 ? (
-              <EmptyRow cols={11} />
+              <EmptyRow cols={12} />
             ) : (
               sorted.map((r) => (
                 <tr
@@ -601,6 +603,7 @@ export function ProductsReportTable({
                   <td className="px-3 py-2.5">{r.margin.toFixed(1)}%</td>
                   <td className="px-3 py-2.5">{r.stock_qty}</td>
                   <td className="px-3 py-2.5">{formatCurrency(r.stock_value)}</td>
+                  <td className="px-3 py-2.5">{formatCurrency(r.stock_value_sell)}</td>
                   <td className="px-3 py-2.5">
                     <StockBadge status={r.stock_status} />
                   </td>
@@ -629,6 +632,7 @@ export function ProductsReportTable({
                 <td className="px-3 py-2.5">—</td>
                 <td className="px-3 py-2.5">{totals.stock}</td>
                 <td className="px-3 py-2.5">{formatCurrency(totals.stockValue)}</td>
+                <td className="px-3 py-2.5">{formatCurrency(totals.stockValueSell)}</td>
                 <td colSpan={2} />
               </tr>
             </tfoot>
@@ -1027,7 +1031,11 @@ export function sectionTableData(section: ReportSection, bundle: ReportsBundle) 
         { label: "المتبقي", value: bundle.overview.remaining },
         { label: "صافي الخزينة", value: bundle.overview.treasury_net },
         { label: "إجمالي المصروفات", value: bundle.overview.expenses_total },
-        { label: "قيمة المخزون", value: bundle.overview.inventory_value },
+        { label: "المخزون بالتكلفة", value: bundle.overview.inventory_value },
+        {
+          label: "المخزون بسعر البيع",
+          value: bundle.overview.inventory_value_sell,
+        },
         { label: "مديونيات العملاء", value: bundle.overview.customer_debt },
       ];
   }

@@ -145,8 +145,12 @@ export default function MobileReportsPage() {
                   amountTone={ov.treasury_net >= 0 ? "positive" : "negative"}
                 />
                 <MobileListRow
-                  title="قيمة المخزون"
+                  title="المخزون بالتكلفة"
                   amount={ov.inventory_value}
+                />
+                <MobileListRow
+                  title="المخزون بسعر البيع"
+                  amount={ov.inventory_value_sell}
                 />
                 <MobileListRow
                   title="ديون العملاء"

@@ -199,8 +199,12 @@ export default function ReportsPage() {
           summary: [
             ...baseSummary,
             {
-              label: "قيمة المخزون",
+              label: "المخزون بالتكلفة",
               value: formatCurrency(bundle.overview.inventory_value),
+            },
+            {
+              label: "المخزون بسعر البيع",
+              value: formatCurrency(bundle.overview.inventory_value_sell),
             },
           ],
         };
