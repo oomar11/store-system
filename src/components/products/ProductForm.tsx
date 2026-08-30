@@ -666,7 +666,8 @@ export function ProductForm({
               dir="ltr"
             />
             <p className="mt-1 text-[10px] text-gray-400">
-              افتراضي للرصيد الافتتاحي: خصم {buyDiscountPercent}٪ من سعر البيع
+              التكلفة عند البيع = سعر الشراء ده. بعد فاتورة شراء يتحدث تلقائياً.
+              افتراضي لو فاضي: خصم {buyDiscountPercent}٪ من سعر البيع
               {form.sell_price > 0
                 ? ` (= ${estimatedBuyPriceFromSell(Number(form.sell_price), buyDiscountPercent)})`
                 : ""}

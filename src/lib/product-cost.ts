@@ -1,8 +1,12 @@
 /**
- * Estimated purchase/cost price when there is no fixed buy price.
- * Always derived from products.sell_price (catalog), never from invoice unit prices.
+ * Estimated purchase/cost price when there is no real buy price yet
+ * (new product / opening stock / never purchased).
+ * Derived from products.sell_price (catalog), never from the sale invoice price.
  * - قطاعات سيتي (and other قطاعات except كورين): sell − 20%
  * - كورين + everything else: sell − 10%
+ *
+ * Sale costing prefers products.buy_price (last purchase / manual) via
+ * saleUnitCostFromProduct — this estimate is only the fallback.
  */
 export const DEFAULT_BUY_DISCOUNT_FROM_SELL_PERCENT = 10;
 /** قطاعات سيتي profiles: deeper trade discount off catalog sell */
@@ -36,6 +40,7 @@ export function estimatedBuyPriceFromSell(
 
 /**
  * Catalog unit cost from the product row: products.sell_price ± category rule.
+ * Fallback only — do not use this when products.buy_price is set.
  * Do not pass invoice line prices here.
  */
 export function catalogUnitCostFromProduct(product: {
@@ -49,6 +54,51 @@ export function catalogUnitCostFromProduct(product: {
     sell,
     buyDiscountPercentForCategory(categoryName)
   );
+}
+
+type CostProduct = {
+  buy_price?: number | null;
+  sell_price?: number | null;
+  category?: { name?: string | null } | null;
+  category_name?: string | null;
+};
+
+function categoryNameFromProduct(product: CostProduct): string | null {
+  return product.category?.name ?? product.category_name ?? null;
+}
+
+/**
+ * Unit cost for a sale: actual buy_price (purchase / opening / manual).
+ * Falls back to catalog sell−10%/20% only when buy is missing or zero.
+ */
+export function saleUnitCostFromProduct(product: CostProduct): number {
+  return resolveBuyPrice(
+    product.buy_price,
+    product.sell_price,
+    buyDiscountPercentForCategory(categoryNameFromProduct(product))
+  );
+}
+
+/**
+ * Prefer a stored sale snapshot unless it is the old catalog estimate
+ * (sell−10%/20%) while the product now has a real buy_price.
+ */
+export function resolveSaleLineUnitCost(
+  snapshot: number | null | undefined,
+  product: CostProduct
+): number {
+  const live = saleUnitCostFromProduct(product);
+  if (snapshot == null || Number.isNaN(Number(snapshot))) return live;
+  const snap = Number(snapshot);
+  const sell = Number(product.sell_price) || 0;
+  if (
+    live > 0 &&
+    Math.abs(snap - live) > 0.005 &&
+    isAnyCatalogBuyEstimate(snap, sell)
+  ) {
+    return live;
+  }
+  return snap;
 }
 
 /**

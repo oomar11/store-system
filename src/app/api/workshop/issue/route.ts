@@ -12,7 +12,7 @@ import { createCompletedInvoice } from "@/lib/create-invoice";
 import {
   mapCartToInvoiceItems,
 } from "@/lib/invoice-cost";
-import { catalogUnitCostFromProduct } from "@/lib/product-cost";
+import { saleUnitCostFromProduct } from "@/lib/product-cost";
 import { roundMoney } from "@/lib/utils";
 
 export const runtime = "nodejs";
@@ -199,13 +199,11 @@ export async function POST(request: NextRequest) {
         Math.max(0, quantity * unitPrice - lineDiscount)
       );
 
-      let unitCost = buyPrice;
-      if (!(unitCost > 0)) {
-        unitCost = catalogUnitCostFromProduct({
-          sell_price: sellPrice,
-          category: product.category,
-        });
-      }
+      const unitCost = saleUnitCostFromProduct({
+        buy_price: buyPrice,
+        sell_price: sellPrice,
+        category: product.category,
+      });
 
       cart.push({
         product: {

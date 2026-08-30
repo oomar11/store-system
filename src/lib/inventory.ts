@@ -1,5 +1,4 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { catalogUnitCostFromProduct } from "@/lib/product-cost";
 
 export type StockLine = {
   product_id: string;
@@ -76,40 +75,29 @@ export type BuyPriceLine = {
 };
 
 /**
- * Keep catalog buy_price aligned with products.sell_price (10%/20% by category).
- * Purchase invoice net costs must NOT overwrite this — costing is catalog-based.
+ * After a purchase, set products.buy_price to the net purchase unit cost
+ * (last cost). Sale costing and below-cost warnings use this value.
  */
 export async function updateProductsBuyPrice(
   supabase: SupabaseClient,
   lines: BuyPriceLine[]
 ): Promise<void> {
-  const ids = [
-    ...new Set(lines.map((l) => l.product_id).filter(Boolean)),
-  ];
-  if (ids.length === 0) return;
-
-  const { data: rows } = await supabase
-    .from("products")
-    .select("id, sell_price, category:categories(name)")
-    .in("id", ids);
-
-  if (!rows?.length) return;
+  const latest = new Map<string, number>();
+  for (const line of lines) {
+    if (!line.product_id) continue;
+    const cost = Math.round((Number(line.unit_cost) || 0) * 100) / 100;
+    if (!(cost > 0)) continue;
+    latest.set(line.product_id, cost);
+  }
+  if (latest.size === 0) return;
 
   await Promise.all(
-    rows.map(async (row) => {
-      const category = Array.isArray(row.category)
-        ? row.category[0]
-        : row.category;
-      const cost = catalogUnitCostFromProduct({
-        sell_price: row.sell_price,
-        category: category as { name?: string } | null,
-      });
-      if (!(cost > 0)) return;
+    [...latest.entries()].map(async ([id, cost]) => {
       try {
         await supabase
           .from("products")
           .update({ buy_price: cost })
-          .eq("id", row.id);
+          .eq("id", id);
       } catch {
         /* best-effort */
       }
