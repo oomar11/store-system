@@ -9,6 +9,8 @@ import { canAccessPath, profileSubject } from "@/lib/permissions";
 import { ShiftProvider, useOpenShift } from "@/hooks/useOpenShift";
 import { ShiftExitGuard } from "@/components/shifts/ShiftExitGuard";
 import { getMemoryProfile } from "@/lib/offline/session-memory";
+import { ShellGuard } from "@/components/routing/ShellGuard";
+import { prefersMobileShell, resolveHomePath } from "@/lib/shell-routes";
 
 function MobileAuthShell({ children }: { children: React.ReactNode }) {
   const [authorized, setAuthorized] = useState(() => !!getMemoryProfile());
@@ -54,7 +56,13 @@ function MobileAuthShell({ children }: { children: React.ReactNode }) {
     if (!authorized || authLoading) return;
     if (!profile) return;
     if (!canAccessPath(profileSubject(profile), pathname)) {
-      router.replace(isEmployee ? "/m/more/shifts?needShift=1" : "/m");
+      router.replace(
+        resolveHomePath({
+          mobile: prefersMobileShell(),
+          employee: isEmployee,
+          needShift: isEmployee,
+        })
+      );
     }
   }, [authorized, authLoading, profile, pathname, router, isEmployee]);
 
@@ -104,14 +112,15 @@ function MobileAuthShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Wait for profile before permission checks; keep shell chrome visible
   if (!profile) {
     return (
-      <MobileShell>
-        <div className="mobile-loading-inline">
-          <div className="mobile-spinner" />
-        </div>
-      </MobileShell>
+      <ShellGuard>
+        <MobileShell>
+          <div className="mobile-loading-inline">
+            <div className="mobile-spinner" />
+          </div>
+        </MobileShell>
+      </ShellGuard>
     );
   }
 
@@ -124,24 +133,26 @@ function MobileAuthShell({ children }: { children: React.ReactNode }) {
     (shiftLoading || blockedByShift);
 
   return (
-    <MobileShell>
-      <ShiftExitGuard />
-      {!allowed || shiftGatePending ? (
-        <div className="mobile-loading-inline">
-          <div className="mobile-spinner" />
-        </div>
-      ) : (
-        <Suspense
-          fallback={
-            <div className="mobile-loading-inline">
-              <div className="mobile-spinner" />
-            </div>
-          }
-        >
-          {children}
-        </Suspense>
-      )}
-    </MobileShell>
+    <ShellGuard>
+      <MobileShell>
+        <ShiftExitGuard />
+        {!allowed || shiftGatePending ? (
+          <div className="mobile-loading-inline">
+            <div className="mobile-spinner" />
+          </div>
+        ) : (
+          <Suspense
+            fallback={
+              <div className="mobile-loading-inline">
+                <div className="mobile-spinner" />
+              </div>
+            }
+          >
+            {children}
+          </Suspense>
+        )}
+      </MobileShell>
+    </ShellGuard>
   );
 }
 

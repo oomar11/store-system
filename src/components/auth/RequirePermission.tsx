@@ -9,6 +9,7 @@ import {
   profileSubject,
   type AppPermission,
 } from "@/lib/permissions";
+import { prefersMobileShell, resolveHomePath } from "@/lib/shell-routes";
 
 type Props = {
   permission?: AppPermission;
@@ -27,7 +28,7 @@ export function RequirePermission({ permission, children }: Props) {
   useEffect(() => {
     if (loading) return;
     if (!allowed) {
-      const fallback = pathname.startsWith("/m") ? "/m" : "/dashboard";
+      const fallback = resolveHomePath({ mobile: prefersMobileShell() });
       router.replace(fallback);
     }
   }, [allowed, loading, pathname, router]);

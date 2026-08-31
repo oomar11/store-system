@@ -10,6 +10,8 @@ import { canAccessPath, profileSubject } from "@/lib/permissions";
 import { ShiftProvider, useOpenShift } from "@/hooks/useOpenShift";
 import { ShiftExitGuard } from "@/components/shifts/ShiftExitGuard";
 import { getMemoryProfile } from "@/lib/offline/session-memory";
+import { ShellGuard } from "@/components/routing/ShellGuard";
+import { prefersMobileShell, resolveHomePath } from "@/lib/shell-routes";
 
 function DashboardShell({ children }: { children: React.ReactNode }) {
   const [authorized, setAuthorized] = useState(() => !!getMemoryProfile());
@@ -55,7 +57,13 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     if (!authorized || authLoading) return;
     if (!profile) return;
     if (!canAccessPath(profileSubject(profile), pathname)) {
-      router.replace(isEmployee ? "/shifts" : "/dashboard");
+      router.replace(
+        resolveHomePath({
+          mobile: prefersMobileShell(),
+          employee: isEmployee,
+          needShift: isEmployee,
+        })
+      );
     }
   }, [authorized, authLoading, profile, pathname, router, isEmployee]);
 
@@ -117,38 +125,40 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     (shiftLoading || blockedByShift);
 
   return (
-    <div className="app-shell flex h-screen overflow-hidden">
-      <ShiftExitGuard />
-      <Sidebar />
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <Suspense
-          fallback={
-            <div className="h-[72px] border-b border-[var(--border)] bg-[var(--surface-subtle)]" />
-          }
-        >
-          <Header />
-        </Suspense>
-        <main className="page-enter flex-1 overflow-y-auto p-4 sm:p-6 lg:p-7">
-          <div className="mx-auto w-full max-w-[1500px]">
-            {!allowed || shiftGatePending ? (
-              <div className="flex justify-center py-16">
-                <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-[var(--border)] border-t-[var(--primary)]" />
-              </div>
-            ) : (
-              <Suspense
-                fallback={
-                  <div className="flex justify-center py-16">
-                    <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-[var(--border)] border-t-[var(--primary)]" />
-                  </div>
-                }
-              >
-                {children}
-              </Suspense>
-            )}
-          </div>
-        </main>
+    <ShellGuard>
+      <div className="app-shell flex h-screen overflow-hidden">
+        <ShiftExitGuard />
+        <Sidebar />
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <Suspense
+            fallback={
+              <div className="h-[72px] border-b border-[var(--border)] bg-[var(--surface-subtle)]" />
+            }
+          >
+            <Header />
+          </Suspense>
+          <main className="page-enter flex-1 overflow-y-auto p-4 sm:p-6 lg:p-7">
+            <div className="mx-auto w-full max-w-[1500px]">
+              {!allowed || shiftGatePending ? (
+                <div className="flex justify-center py-16">
+                  <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-[var(--border)] border-t-[var(--primary)]" />
+                </div>
+              ) : (
+                <Suspense
+                  fallback={
+                    <div className="flex justify-center py-16">
+                      <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-[var(--border)] border-t-[var(--primary)]" />
+                    </div>
+                  }
+                >
+                  {children}
+                </Suspense>
+              )}
+            </div>
+          </main>
+        </div>
       </div>
-    </div>
+    </ShellGuard>
   );
 }
 

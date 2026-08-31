@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { MOBILE_DESKTOP_MIN, MOBILE_TABLET_MIN } from "@/lib/mobile-nav";
+import { MOBILE_DESKTOP_MIN, MOBILE_TABLET_MIN } from "@/lib/shell-routes";
 
 export type ViewportMode = "phone" | "tablet" | "desktop";
 
@@ -37,7 +37,4 @@ export function useViewportMode() {
 }
 
 /** Prefer mobile shell after login when width is below desktop. */
-export function prefersMobileShell(): boolean {
-  if (typeof window === "undefined") return false;
-  return window.innerWidth < MOBILE_DESKTOP_MIN;
-}
+export { prefersMobileShell } from "@/lib/shell-routes";

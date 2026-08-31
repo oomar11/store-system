@@ -115,6 +115,14 @@
           return null;
         }
 
+        function defaultBootPath() {
+          var w =
+            window.innerWidth ||
+            document.documentElement.clientWidth ||
+            1280;
+          return w < 1280 ? "/m" : "/dashboard";
+        }
+
         async function boot() {
           try {
             var last = preferredPath();
@@ -129,13 +137,14 @@
               }
             }
             if (!path) path = await findCachedPath();
+            if (!path) path = defaultBootPath();
             if (path) {
               location.replace(path);
               return;
             }
             // Soft try — never bounce to `/` (causes redirect loops with SW)
             location.replace(
-              navigator.onLine === false ? "/pos" : "/login?next=/programs"
+              navigator.onLine === false ? defaultBootPath() : "/login?next=/programs"
             );
           } catch (e) {
             showErr();

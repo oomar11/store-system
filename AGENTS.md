@@ -40,8 +40,7 @@ npx vercel --prod --yes
 ```
 
 **Production URL (canonical):** https://store-system-rho.vercel.app  
-Mobile: https://store-system-rho.vercel.app/m  
-Always verify changes on this host (not `store-system-iota` or Preview URLs).
+Always verify changes on this host (not `store-system-iota` or Preview URLs). The app auto-selects mobile or desktop UI from viewport width — no separate mobile link needed.
 
 ### مساعد جارفس — متغيرات Vercel (مشروع rho)
 لازم تكون موجودة على Production:
