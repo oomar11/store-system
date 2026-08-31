@@ -67,8 +67,7 @@ export const mobileNavItems: MobileNavItem[] = [
   },
 ];
 
-export const MOBILE_TABLET_MIN = 768;
-export const MOBILE_DESKTOP_MIN = 1280;
+export { MOBILE_DESKTOP_MIN, MOBILE_TABLET_MIN } from "@/lib/shell-routes";
 
 export function isMobileNavActive(pathname: string, href: string): boolean {
   if (href === "/m") return pathname === "/m" || pathname === "/m/";

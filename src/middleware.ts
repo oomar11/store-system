@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isMobileUserAgent } from "@/lib/shell-routes";
 
 function withSupabaseCookies(
   from: NextResponse,
@@ -112,10 +113,12 @@ export async function middleware(request: NextRequest) {
     );
   }
 
-  // Logged-in users hitting `/` → dashboard (rewrite = 200, SW-safe)
+  // Logged-in users hitting `/` → home shell (rewrite = 200, SW-safe)
   if (user && isRoot) {
     const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
+    url.pathname = isMobileUserAgent(request.headers.get("user-agent") ?? "")
+      ? "/m"
+      : "/dashboard";
     return withSupabaseCookies(supabaseResponse, NextResponse.rewrite(url));
   }
 

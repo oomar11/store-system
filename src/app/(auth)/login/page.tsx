@@ -15,6 +15,7 @@ import {
 import { BrandLogo } from "@/components/BrandLogo";
 import { useTheme } from "@/hooks/useTheme";
 import { createClient } from "@/lib/supabase";
+import { prefersMobileShell, resolveHomePath } from "@/lib/shell-routes";
 import type { ThemePreference } from "@/lib/theme";
 
 function loginErrorMessage(message: string, status?: number): string {
@@ -71,8 +72,7 @@ export default function LoginPage() {
 
     const uname = username.trim().toLowerCase();
     const email = `${uname}@store.local`;
-    const isCompact =
-      typeof window !== "undefined" && window.innerWidth < 1280;
+    const mobile = prefersMobileShell();
 
     const {
       enrollOfflineCredential,
@@ -99,9 +99,13 @@ export default function LoginPage() {
         setLoading(false);
         return;
       }
-      let nextPath = isCompact ? "/m" : "/dashboard";
+      let nextPath = resolveHomePath({ mobile });
       if (result.profile.role === "employee") {
-        nextPath = isCompact ? "/m/more/shifts?needShift=1" : "/shifts";
+        nextPath = resolveHomePath({
+          mobile,
+          employee: true,
+          needShift: true,
+        });
       }
       setLoading(false);
       router.push(nextPath);
@@ -135,7 +139,7 @@ export default function LoginPage() {
         data: { user },
       } = await supabase.auth.getUser();
 
-      let nextPath = isCompact ? "/m" : "/dashboard";
+      let nextPath = resolveHomePath({ mobile });
       let profileRole: string | undefined;
       if (user) {
         const { data: profile } = await supabase
@@ -162,7 +166,11 @@ export default function LoginPage() {
             "online"
           );
           if (profile.role === "employee") {
-            nextPath = isCompact ? "/m/more/shifts?needShift=1" : "/shifts";
+            nextPath = resolveHomePath({
+              mobile,
+              employee: true,
+              needShift: true,
+            });
           }
         }
       }
