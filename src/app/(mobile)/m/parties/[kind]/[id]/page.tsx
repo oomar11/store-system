@@ -21,6 +21,7 @@ import {
   type OpenInvoiceForPayment,
   type PartyPaymentRow,
 } from "@/lib/party-payments";
+import { computeNetBalance } from "@/lib/party-link";
 import {
   applyPartyPaymentOnlineOrQueue,
   getSnapshot,
@@ -63,9 +64,40 @@ type Filter =
   | "purchase_return"
   | "collection"
   | "disbursement"
+  | "settlement"
   | "opening"
   | "workshop"
   | "plisse";
+
+function linkedIdOf(kind: Kind, party: Customer | Supplier): string | null {
+  if (kind === "customer") {
+    return (party as Customer).linked_supplier_id || null;
+  }
+  return (party as Supplier).linked_customer_id || null;
+}
+
+function dedupePaymentRows(allPayments: PartyPaymentRow[]): PartyInvoiceRow[] {
+  const seenPaymentIds = new Set<string>();
+  return allPayments
+    .filter((p) => {
+      if (seenPaymentIds.has(p.id)) return false;
+      if (p.settlement_group_id) {
+        const twin = allPayments.find(
+          (x) =>
+            x.id !== p.id && x.settlement_group_id === p.settlement_group_id
+        );
+        if (twin) {
+          seenPaymentIds.add(p.id);
+          seenPaymentIds.add(twin.id);
+          // Keep one settlement row (customer side preferred)
+          return p.party_type === "customer" || !twin;
+        }
+      }
+      seenPaymentIds.add(p.id);
+      return true;
+    })
+    .map(partyPaymentToHistoryRow);
+}
 
 export default function MobilePartyDetailPage() {
   const params = useParams<{ kind: string; id: string }>();
@@ -87,6 +119,9 @@ export default function MobilePartyDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [party, setParty] = useState<(Customer | Supplier) | null>(null);
+  const [linkedParty, setLinkedParty] = useState<(Customer | Supplier) | null>(
+    null
+  );
   const [rows, setRows] = useState<PartyInvoiceRow[]>([]);
   const [openTotal, setOpenTotal] = useState(0);
   const [openInvoices, setOpenInvoices] = useState<OpenInvoiceForPayment[]>([]);
@@ -108,6 +143,7 @@ export default function MobilePartyDetailPage() {
       // Party + safes: local-first from snapshot
       await readLocalThenNetwork<{
         party: Customer | Supplier;
+        linkedParty: Customer | Supplier | null;
         safes: Safe[];
       }>({
         offline,
@@ -119,14 +155,38 @@ export default function MobilePartyDetailPage() {
             kind === "customer" ? snap.customers || [] : snap.suppliers || [];
           const found = list.find((p) => p.id === id);
           if (!found) return null;
+          const linkedId =
+            kind === "customer"
+              ? found.linked_supplier_id || null
+              : found.linked_customer_id || null;
+          const linkedList =
+            kind === "customer" ? snap.suppliers || [] : snap.customers || [];
+          const linkedFound = linkedId
+            ? linkedList.find((p) => p.id === linkedId)
+            : null;
+          const partyData = {
+            id: found.id,
+            name: found.name,
+            phone: found.phone || undefined,
+            balance: found.balance,
+            linked_supplier_id:
+              kind === "customer" ? found.linked_supplier_id : undefined,
+            linked_customer_id:
+              kind === "supplier" ? found.linked_customer_id : undefined,
+            created_at: "",
+          } as Customer | Supplier;
+          const linkedData = linkedFound
+            ? ({
+                id: linkedFound.id,
+                name: linkedFound.name,
+                phone: linkedFound.phone || undefined,
+                balance: linkedFound.balance,
+                created_at: "",
+              } as Customer | Supplier)
+            : null;
           return {
-            party: {
-              id: found.id,
-              name: found.name,
-              phone: found.phone || undefined,
-              balance: found.balance,
-              created_at: "",
-            } as Customer | Supplier,
+            party: partyData,
+            linkedParty: linkedData,
             safes: normalizeActiveSafes(
               (snap.safes || []).map(
                 (s) =>
@@ -156,14 +216,30 @@ export default function MobilePartyDetailPage() {
           );
           if (partyRes.error) throw new Error(partyRes.error.message);
           if (!partyRes.data) throw new Error("الطرف غير موجود");
+          const partyData = partyRes.data as Customer | Supplier;
+          const linkedId = linkedIdOf(kind, partyData);
+          let linkedData: Customer | Supplier | null = null;
+          if (linkedId) {
+            const linkedTable = kind === "customer" ? "suppliers" : "customers";
+            const linkedRes = await supabase
+              .from(linkedTable)
+              .select("*")
+              .eq("id", linkedId)
+              .maybeSingle();
+            if (linkedRes.data) {
+              linkedData = linkedRes.data as Customer | Supplier;
+            }
+          }
           return {
-            party: partyRes.data as Customer | Supplier,
+            party: partyData,
+            linkedParty: linkedData,
             safes: normalizeActiveSafes((safesRes.data || []) as Safe[]),
           };
         },
         apply: (data) => {
           const safes = normalizeActiveSafes(data.safes);
           setParty(data.party);
+          setLinkedParty(data.linkedParty);
           setSafes(safes);
           const def = pickDefaultSafeId(safes);
           if (def) setSafeId((p) => p || def);
@@ -205,16 +281,72 @@ export default function MobilePartyDetailPage() {
           ),
         ]);
 
-      if (partyForOpening) setParty(partyForOpening);
+      const primaryParty = partyForOpening;
+      if (primaryParty) setParty(primaryParty);
 
-      const opening = partyForOpening
-        ? buildPartyOpeningRow(partyForOpening)
-        : null;
-      const paymentRows = payments.map(partyPaymentToHistoryRow);
+      const linkedId = primaryParty ? linkedIdOf(kind, primaryParty) : null;
+      let linkedData: Customer | Supplier | null = null;
+      let linkedHistory: PartyInvoiceRow[] = [];
+      let linkedCrossApp: PartyInvoiceRow[] = [];
+      let linkedPayments: PartyPaymentRow[] = [];
+
+      if (linkedId) {
+        const linkedKind: Kind = kind === "customer" ? "supplier" : "customer";
+        const linkedTable = kind === "customer" ? "suppliers" : "customers";
+        const [linkedRes, linkedHist, linkedXApp, linkedPays] =
+          await Promise.all([
+            settled(
+              (async () => {
+                const { data } = await supabase
+                  .from(linkedTable)
+                  .select("*")
+                  .eq("id", linkedId)
+                  .maybeSingle();
+                return (data as Customer | Supplier | null) || null;
+              })(),
+              null as Customer | Supplier | null
+            ),
+            settled(
+              kind === "customer"
+                ? fetchSupplierHistory(linkedId)
+                : fetchCustomerHistory(linkedId),
+              [] as PartyInvoiceRow[]
+            ),
+            settled(
+              fetchCrossAppPartyHistory(linkedKind, linkedId, supabase),
+              [] as PartyInvoiceRow[]
+            ),
+            settled(
+              listPartyPayments(supabase, linkedKind, linkedId),
+              [] as PartyPaymentRow[]
+            ),
+          ]);
+        if (linkedRes) {
+          linkedData = linkedRes;
+          linkedHistory = linkedHist;
+          linkedCrossApp = linkedXApp;
+          linkedPayments = linkedPays;
+        }
+      }
+
+      setLinkedParty(linkedData);
+
+      const openingRows = [
+        primaryParty ? buildPartyOpeningRow(primaryParty) : null,
+        linkedData ? buildPartyOpeningRow(linkedData) : null,
+      ].filter(Boolean) as PartyInvoiceRow[];
+
+      const paymentRows = dedupePaymentRows([
+        ...payments,
+        ...linkedPayments,
+      ]);
+
       const merged = [
-        ...(opening ? [opening] : []),
+        ...openingRows,
         ...history,
+        ...linkedHistory,
         ...crossApp,
+        ...linkedCrossApp,
         ...paymentRows,
       ].sort(
         (a, b) =>
@@ -232,6 +364,7 @@ export default function MobilePartyDetailPage() {
       setRows([]);
       setOpenInvoices([]);
       setOpenTotal(0);
+      setLinkedParty(null);
     } finally {
       setLoading(false);
     }
@@ -239,19 +372,23 @@ export default function MobilePartyDetailPage() {
 
   useEffect(() => {
     if (authLoading) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial data load
     void load();
   }, [authLoading, load]);
 
-  const filtered = useMemo(() => {
-    if (filter === "all") return rows;
-    if (filter === "workshop") {
-      return rows.filter((r) => r.isCrossApp && r.sourceSystem === "aa");
-    }
-    if (filter === "plisse") {
-      return rows.filter((r) => r.isCrossApp && r.sourceSystem === "plisse");
-    }
-    return rows.filter((r) => r.type === filter);
-  }, [filter, rows]);
+  const isDualLinked = Boolean(linkedParty);
+  const customerBalanceForNet =
+    kind === "customer" ? party?.balance ?? 0 : linkedParty?.balance ?? 0;
+  const supplierBalanceForNet =
+    kind === "supplier" ? party?.balance ?? 0 : linkedParty?.balance ?? 0;
+  const netBalance = isDualLinked
+    ? computeNetBalance(customerBalanceForNet, supplierBalanceForNet)
+    : null;
+
+  const linkedKind: Kind = kind === "customer" ? "supplier" : "customer";
+  const linkedHref = linkedParty
+    ? `/m/parties/${linkedKind}/${linkedParty.id}`
+    : null;
 
   const sharePayload: SharePayload | null = useMemo(() => {
     if (!party) return null;
@@ -259,22 +396,32 @@ export default function MobilePartyDetailPage() {
       (a, b) =>
         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
-    const kindLabel = kind === "customer" ? "عميل" : "مورد";
+    const kindLabel = isDualLinked
+      ? "عميل+مورد"
+      : kind === "customer"
+        ? "عميل"
+        : "مورد";
     const metaLines = [
       `تاريخ الكشف ${formatDateShort(new Date())}`,
       ...(party.phone ? [`هاتف ${party.phone}`] : []),
+      ...(linkedParty
+        ? [`الحساب المربوط ${linkedParty.name}`]
+        : []),
       ...(openTotal > 0.001
         ? [`متبقي فواتير مفتوحة ${formatCurrency(openTotal)}`]
         : []),
     ];
     return {
-      title:
-        kind === "customer"
+      title: isDualLinked
+        ? `كشف حساب موحّد — ${party.name}`
+        : kind === "customer"
           ? `كشف حساب عميل — ${party.name}`
           : `كشف حساب مورد — ${party.name}`,
       subtitle: kindLabel,
-      totalLabel: "الرصيد",
-      total: formatCurrency(Number(party.balance)),
+      totalLabel: isDualLinked ? "الرصيد الصافي" : "الرصيد",
+      total: netBalance
+        ? netBalance.label
+        : formatCurrency(Number(party.balance)),
       metaLines,
       lines: chronological.map((row) => ({
         title: `${invoiceTypeLabel(row.type, row.sourceSystem)} · ${row.invoice_number}`,
@@ -283,7 +430,7 @@ export default function MobilePartyDetailPage() {
       })),
       fileBaseName: `كشف_${party.name}`,
     };
-  }, [kind, openTotal, party, rows]);
+  }, [isDualLinked, kind, linkedParty, netBalance, openTotal, party, rows]);
 
   async function submitPayment() {
     if (!party) return;
@@ -323,8 +470,21 @@ export default function MobilePartyDetailPage() {
     );
   }, [amount, openInvoices, party]);
 
-  const filterChips: { id: Filter; label: string }[] =
-    kind === "customer"
+  const filterChips: { id: Filter; label: string }[] = isDualLinked
+    ? [
+        { id: "all", label: "الكل" },
+        { id: "sale", label: "بيع" },
+        { id: "purchase", label: "شراء" },
+        { id: "sale_return", label: "مرتجع بيع" },
+        { id: "purchase_return", label: "مرتجع شراء" },
+        { id: "collection", label: "تحصيل" },
+        { id: "disbursement", label: "سداد" },
+        { id: "settlement", label: "مقاصة" },
+        { id: "workshop", label: "ورشة" },
+        { id: "plisse", label: "بلسية" },
+        { id: "opening", label: "افتتاحي" },
+      ]
+    : kind === "customer"
       ? [
           { id: "all", label: "الكل" },
           { id: "sale", label: "بيع" },
@@ -344,11 +504,32 @@ export default function MobilePartyDetailPage() {
           { id: "opening", label: "افتتاحي" },
         ];
 
+  const activeFilter = filterChips.some((c) => c.id === filter)
+    ? filter
+    : "all";
+
+  const filtered = useMemo(() => {
+    if (activeFilter === "all") return rows;
+    if (activeFilter === "workshop") {
+      return rows.filter((r) => r.isCrossApp && r.sourceSystem === "aa");
+    }
+    if (activeFilter === "plisse") {
+      return rows.filter((r) => r.isCrossApp && r.sourceSystem === "plisse");
+    }
+    return rows.filter((r) => r.type === activeFilter);
+  }, [activeFilter, rows]);
+
   return (
     <>
       <MobileHeader
         title={party?.name || "حساب الطرف"}
-        subtitle={kind === "customer" ? "عميل" : "مورد"}
+        subtitle={
+          isDualLinked
+            ? "عميل+مورد"
+            : kind === "customer"
+              ? "عميل"
+              : "مورد"
+        }
         onRefresh={load}
         refreshing={loading}
         trailing={
@@ -367,10 +548,20 @@ export default function MobilePartyDetailPage() {
         ) : (
           <>
             <div className="mobile-money-hero mb-3">
-              <p className="mobile-money-hero__label">الرصيد</p>
-              <p className="mobile-money-hero__amount">
-                {formatCurrency(Number(party.balance))}
+              <p className="mobile-money-hero__label">
+                {isDualLinked ? "الرصيد الصافي" : "الرصيد"}
               </p>
+              <p className="mobile-money-hero__amount">
+                {netBalance
+                  ? netBalance.label
+                  : formatCurrency(Number(party.balance))}
+              </p>
+              {isDualLinked && linkedParty ? (
+                <p className="mobile-money-hero__meta">
+                  مبيعات {formatCurrency(Number(customerBalanceForNet))} ·
+                  مشتريات {formatCurrency(Number(supplierBalanceForNet))}
+                </p>
+              ) : null}
               {openTotal > 0.001 ? (
                 <p className="mobile-money-hero__meta">
                   متبقي فواتير مفتوحة {formatCurrency(openTotal)}
@@ -378,6 +569,15 @@ export default function MobilePartyDetailPage() {
               ) : null}
               {party.phone ? (
                 <p className="mobile-money-hero__note">{party.phone}</p>
+              ) : null}
+              {linkedParty && linkedHref ? (
+                <button
+                  type="button"
+                  className="mt-2 text-[12px] font-bold text-[var(--primary)]"
+                  onClick={() => router.push(linkedHref)}
+                >
+                  الحساب المربوط: {linkedParty.name}
+                </button>
               ) : null}
               {canPay && safes.length > 0 ? (
                 <button
@@ -399,16 +599,16 @@ export default function MobilePartyDetailPage() {
                   router.push(`/m/parties/${kind}/${party.id}/statement`)
                 }
               >
-                كشف حساب مفصّل
+                {isDualLinked ? "كشف حساب موحّد" : "كشف حساب مفصّل"}
               </button>
             </div>
 
-            <MobileSection title="الحركة">
+            <MobileSection title={isDualLinked ? "الحركة الموحّدة" : "الحركة"}>
               <div className="mobile-chip-row">
                 {filterChips.map((c) => (
                   <MobileChip
                     key={c.id}
-                    active={filter === c.id}
+                    active={activeFilter === c.id}
                     onClick={() => setFilter(c.id)}
                   >
                     {c.label}
@@ -431,9 +631,10 @@ export default function MobilePartyDetailPage() {
                         "purchase_return",
                       ].includes(row.type);
                     const showType =
-                      filter === "all" ||
-                      filter === "workshop" ||
-                      filter === "plisse";
+                      activeFilter === "all" ||
+                      activeFilter === "workshop" ||
+                      activeFilter === "plisse" ||
+                      isDualLinked;
                     const invoiceRemaining =
                       clickable &&
                       (row.type === "sale" || row.type === "purchase")
